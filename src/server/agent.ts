@@ -18,7 +18,7 @@ import { chunkDigest, decodeTraffic, encodeTraffic, trafficDigest } from "../cor
 import { isClassifyIntent } from "../core/narrative-schema";
 import { toReplayResult } from "../core/replay";
 import { compileRule, type ChunkReplay, type CompiledRule, replayChunk } from "../core/rules/evaluate";
-import { checkRuleText, modelFailureOutcome, verifyAst, verifyModelDraft } from "../core/rules/pipeline";
+import { checkRuleText, modelFailureOutcome, verifyAst, verifyModelDraftText } from "../core/rules/pipeline";
 import { checkSymptom } from "../core/sanitize";
 import { SCENARIOS, type ScenarioDefinition } from "../core/scenarios";
 import { compileScenario, generateRange } from "../core/simulator";
@@ -496,7 +496,7 @@ export class IncidentAgent extends Agent<Env, AgentState> {
       // The model call itself failed; the draft already carries its diagnostic.
       return { status: v.status, diagnosticCodes: v.diagnostics.map((d) => d.code) };
     }
-    const outcome = verifyModelDraft(v.rawModelOutput);
+    const outcome = verifyModelDraftText(v.rawModelOutput);
     const updated: RuleVersion = { ...v, status: outcome.status, ast: outcome.ast, text: outcome.text, diagnostics: outcome.diagnostics };
     store.saveRuleVersion(this.db, updated);
     this.refreshState();

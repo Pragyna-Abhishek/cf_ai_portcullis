@@ -175,6 +175,60 @@ describe("model output decoder", () => {
   });
 });
 
+// The connective-explosion pathology, from the deployed site's first real (non-fake) investigation
+// (docs/reviews/2026-09-27-first-real-model-run.md). The model, given RULE_JSON_SCHEMA, produced
+// a perfect binary tree of pure "or" connectives -- ids doubling, no leaf condition anywhere -- and
+// ran out its 1024-token completion budget mid-object, on all 3 draft attempts.
+//
+// The strings below are the real head and tail bytes of two of those three attempts, exactly as
+// the deployed UI's raw-output view showed them (it excerpts the first and last 400 characters).
+// The middle (1359-1361 characters, depending on the attempt) was never captured anywhere: the UI
+// never rendered more than the head and tail, so there is no complete original to reproduce. What
+// is here is the two genuine boundary substrings concatenated with nothing invented in between --
+// still truncated, unbalanced JSON, same as the real output was. The test does not depend on the
+// omitted middle: any string with this shape (an object opened but never closed, a value cut off
+// mid-token) must fail JSON.parse, so decodeModelOutput must reject it as E_SCHEMA_NOT_JSON either
+// way. This documents that the bug was real and reproducible, not that this exact byte sequence is
+// what shipped that day.
+describe("regression: the real truncated connective-explosion output (2026-09-27)", () => {
+  // Attempt 1 of 3 (and attempt 2, byte-identical): 2159 characters total, 1359 omitted.
+  const attempt1HeadAndTail =
+    '{"nodes": [{"id": 0, "kind": "and", "left": 1, "right": 2}, {"id": 1, "kind": "or", "left": 3, "right": 4}, ' +
+    '{"id": 2, "kind": "or", "left": 5, "right": 6}, {"id": 3, "kind": "or", "left": 7, "right": 8}, ' +
+    '{"id": 4, "kind": "or", "left": 9, "right": 10}, {"id": 5, "kind": "or", "left": 11, "right": 12}, ' +
+    '{"id": 6, "kind": "or", "left": 13, "right": 14}, {"id": 7, "kind": "or", "left": 15, "right": 16' +
+    // -- 1359 characters omitted: never shown by the UI, never captured --
+    ', "right": 70}, {"id": 35, "kind": "or", "left": 71, "right": 72}, {"id": 36, "kind": "or", "left": 73, "right": 74}, ' +
+    '{"id": 37, "kind": "or", "left": 75, "right": 76}, {"id": 38, "kind": "or", "left": 77, "right": 78}, ' +
+    '{"id": 39, "kind": "or", "left": 79, "right": 80}, {"id": 40, "kind": "or", "left": 81, "right": 82}, ' +
+    '{"id": 41, "kind": "or", "left": 83, "right": 84}, {"id": 42, "kind": "or",';
+
+  // Attempt 3 of 3: 2161 characters total, 1361 omitted. Same head; the tail's boundary lands two
+  // characters later, consistent with running two tokens further before the same 1024-token cutoff.
+  const attempt3HeadAndTail =
+    '{"nodes": [{"id": 0, "kind": "and", "left": 1, "right": 2}, {"id": 1, "kind": "or", "left": 3, "right": 4}, ' +
+    '{"id": 2, "kind": "or", "left": 5, "right": 6}, {"id": 3, "kind": "or", "left": 7, "right": 8}, ' +
+    '{"id": 4, "kind": "or", "left": 9, "right": 10}, {"id": 5, "kind": "or", "left": 11, "right": 12}, ' +
+    '{"id": 6, "kind": "or", "left": 13, "right": 14}, {"id": 7, "kind": "or", "left": 15, "right": 16' +
+    // -- 1361 characters omitted: never shown by the UI, never captured --
+    '9, "right": 70}, {"id": 35, "kind": "or", "left": 71, "right": 72}, {"id": 36, "kind": "or", "left": 73, "right": 74}, ' +
+    '{"id": 37, "kind": "or", "left": 75, "right": 76}, {"id": 38, "kind": "or", "left": 77, "right": 78}, ' +
+    '{"id": 39, "kind": "or", "left": 79, "right": 80}, {"id": 40, "kind": "or", "left": 81, "right": 82}, ' +
+    '{"id": 41, "kind": "or", "left": 83, "right": 84}, {"id": 42, "kind": "or", "';
+
+  it("decodeModelOutput still correctly rejects the real attempt-1/2 output as E_SCHEMA_NOT_JSON", () => {
+    const r = decodeModelOutput(attempt1HeadAndTail);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.diagnostics[0]?.code).toBe("E_SCHEMA_NOT_JSON");
+  });
+
+  it("decodeModelOutput still correctly rejects the real attempt-3 output as E_SCHEMA_NOT_JSON", () => {
+    const r = decodeModelOutput(attempt3HeadAndTail);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.diagnostics[0]?.code).toBe("E_SCHEMA_NOT_JSON");
+  });
+});
+
 describe("structural limits", () => {
   const leaf: RuleAST = { kind: "compare", field: "ip.src.asnum", op: "eq", value: 1 };
 

@@ -13,7 +13,7 @@ cannot be verified by running something, it is not a criterion.
 
 | Phase | State | What is left |
 | --- | --- | --- |
-| 0 | All four spikes measured (`docs/spikes.md`); 0.4 measured **negative**, two fallbacks attempted | Fallback 1 (flatten the schema) measured, still fails. Fallback 2 (split leaf kinds by value type) implemented and unit-tested, **not yet re-measured**: the account's daily free neuron allocation was exhausted verifying fallback 1. Re-run `structured` once it resets |
+| 0 | All four spikes measured (`docs/spikes.md`); 0.4 measured **negative** against the real account twice | Fallback 1 (flatten the schema) measured, still fails. Fallback 2 (split leaf kinds by value type) re-measured 2026-09-27 against the deployed site's first real investigation: also fails, same connective-explosion pathology, 0/3 real attempts schema-valid. Production has moved off the AST-JSON route entirely, to the model emitting rule text directly (not one of 0.4's four listed schema fallbacks): see DESIGN.md section 7 ("Round-trip property") and `docs/reviews/2026-09-27-first-real-model-run.md`. Fallbacks 3 (two-call decomposition) and 4 (few-shot) are moot unless the text route itself is later found insufficient |
 | 1 | Built, tested locally, deployed | `https://portcullis.pragyna-portcullis.workers.dev` is live and serving. The 60-second demo has not yet been driven against the deployed URL in a browser. The model's rule step is expected to keep failing visibly on this account until 0.4's fallback 2 is re-measured and confirmed (see Phase 0) |
 | 2 | Built, tested | Abhishek to review the grammar in DESIGN.md section 7 |
 | 3 | Built, tested (fake model only; not yet exercised against the real model, see Phase 0) | Bounded retry loop, diagnostics feedback, attempt history all implemented (`src/server/workflow.ts`, `src/core/prompt.ts`). Real-model behavior under retry is unverified until 0.4 is resolved |
@@ -38,6 +38,14 @@ Deviations from this plan, on purpose:
   (live traffic panel, step list updating over WebSocket, panel recovering after approve, history
   after reload). Those were checked on 2026-09-25 by driving the local app in a headless browser,
   which is not a committed test.
+- **2026-09-27: the production draft step moved from AST JSON to rule text**, ahead of Phase 5's
+  original ablation ordering, because the first real-account investigation showed the AST route
+  failing structurally, not by occasional syntax slip (see the Phase 0 row above). Follow-up not
+  done as part of this fix: `src/eval/harness.ts`'s primary (non-ablation) scenario runner still
+  measures the AST route via `RULE_JSON_SCHEMA`/`verifyModelDraft`, and ablation 4 (Phase 5) still
+  measures the text route as if it were the alternative. Swapping which one the harness treats as
+  primary is real work (the ablation's `TextAblationResult` type is narrower than the primary
+  flow's `DraftOutcome`) and belongs to whoever next touches Phase 5, not bundled into this fix.
 
 ## Testing setup, established in Phase 0 and used by every phase after
 

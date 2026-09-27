@@ -14,17 +14,16 @@
 import { AgentWorkflow, WorkflowRejectedError, type AgentWorkflowEvent, type AgentWorkflowStep } from "agents/workflows";
 import { NonRetryableError } from "cloudflare:workflows";
 import { planChunks } from "../core/chunks";
-import { CLASSIFY_JSON_SCHEMA, HYPOTHESIZE_JSON_SCHEMA, WRITE_REPORT_JSON_SCHEMA } from "../core/narrative-schema";
+import { CLASSIFY_JSON_SCHEMA, HYPOTHESIZE_JSON_SCHEMA, TEXT_RULE_JSON_SCHEMA, WRITE_REPORT_JSON_SCHEMA } from "../core/narrative-schema";
 import { buildClassifyPrompt, buildDraftRulePrompt, buildHypothesizePrompt, buildReportPrompt, MAX_DRAFT_ATTEMPTS, type PriorAttempt } from "../core/prompt";
 import { toReplayResult } from "../core/replay";
 import { mergeChunkReplays, type ChunkReplay } from "../core/rules/evaluate";
-import { RULE_JSON_SCHEMA } from "../core/rules/schema";
 import { findScenario } from "../core/scenarios";
 import type { ReplayResult, RuleVersionStatus, TrafficSummary } from "../core/types";
 import { QuotaExhaustedError, requireOkResponse } from "../model/client";
 import type { IncidentAgent } from "./agent";
 import { modelFor } from "./model";
-import { CLASSIFY_SYMPTOM_TEMPLATES, DRAFT_RULE_TEMPLATES, HYPOTHESIZE_TEMPLATES, WRITE_REPORT_TEMPLATES } from "./prompts";
+import { CLASSIFY_SYMPTOM_TEMPLATES, DRAFT_RULE_TEXT_TEMPLATES, HYPOTHESIZE_TEMPLATES, WRITE_REPORT_TEMPLATES } from "./prompts";
 import type { InvestigationParams } from "./views";
 
 export const STEP = {
@@ -167,8 +166,8 @@ export class InvestigationWorkflow extends AgentWorkflow<IncidentAgent, Investig
       const attemptDraftId = await step.do(draftName, modelCall, () =>
         tracked<string>(draftName, async () => {
           const model = modelFor(this.env);
-          const prompt = buildDraftRulePrompt(DRAFT_RULE_TEMPLATES, { symptom: p.symptom, summary, priorAttempts });
-          const response = await model.generateJson({ ...prompt, purpose: "draft-rule", jsonSchema: RULE_JSON_SCHEMA });
+          const prompt = buildDraftRulePrompt(DRAFT_RULE_TEXT_TEMPLATES, { symptom: p.symptom, summary, priorAttempts });
+          const response = await model.generateJson({ ...prompt, purpose: "draft-rule-text", jsonSchema: TEXT_RULE_JSON_SCHEMA });
           await agent.recordModelOutcome(p.incidentId, response);
           try {
             requireOkResponse(response);

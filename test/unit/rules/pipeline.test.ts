@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DIAGNOSTIC_CODES } from "../../../src/core/rules/diagnostics";
 import { parse } from "../../../src/core/rules/parser";
-import { checkRuleText, modelFailureOutcome, verifyAst, verifyModelDraft } from "../../../src/core/rules/pipeline";
+import { checkRuleText, modelFailureOutcome, verifyAst, verifyModelDraft, verifyModelDraftText } from "../../../src/core/rules/pipeline";
 import { print } from "../../../src/core/rules/printer";
 import { encodeRuleAst } from "../../../src/core/rules/schema";
 import type { RuleAST } from "../../../src/core/types";
@@ -85,6 +85,52 @@ describe("verification pipeline", () => {
     const wide = (d: number): RuleAST =>
       d === 0 ? { kind: "compare", field: "ip.src.asnum", op: "eq", value: d } : { kind: "or", left: wide(d - 1), right: wide(d - 1) };
     expect(checkRuleText(print(wide(7)).text).diagnostics.map((d) => d.code)).toEqual(["E_AST_TOO_MANY_NODES"]);
+  });
+});
+
+describe("verifyModelDraftText (docs/reviews/2026-09-27-first-real-model-run.md)", () => {
+  const wrapText = (rule: string) => JSON.stringify({ rule });
+
+  it("a good draft is valid, printed, and round-tripped", () => {
+    const out = verifyModelDraftText(wrapText('http.request.uri.path eq "/login" and lower(http.user_agent) contains "okhttp"'));
+    expect(out.status).toBe("valid");
+    expect(out.ast).toEqual(good);
+    expect(out.diagnostics).toEqual([]);
+  });
+
+  it("a wrapper that is not JSON is invalid-schema, not a parser crash", () => {
+    expect(verifyModelDraftText("not json at all")).toMatchObject({ status: "invalid-schema", ast: null, text: null });
+    expect(verifyModelDraftText("not json at all").diagnostics[0]?.code).toBe("E_SCHEMA_NOT_JSON");
+  });
+
+  it("a wrapper missing, misnamed, or mistyping the rule property is invalid-schema", () => {
+    expect(verifyModelDraftText("{}").diagnostics[0]?.code).toBe("E_SCHEMA_INVALID");
+    expect(verifyModelDraftText('{"rule": 5}').diagnostics[0]?.code).toBe("E_SCHEMA_INVALID");
+    expect(verifyModelDraftText('{"rule": "x eq 1", "extra": true}').diagnostics[0]?.code).toBe("E_SCHEMA_INVALID");
+    expect(verifyModelDraftText("[]").diagnostics[0]?.code).toBe("E_SCHEMA_INVALID");
+  });
+
+  it("a syntax error in the rule text is invalid-schema with the parser's own diagnostic, not a new code", () => {
+    const out = verifyModelDraftText(wrapText("http.user_agent eq"));
+    expect(out.status).toBe("invalid-schema");
+    expect(out.diagnostics[0]?.code).toBe("E_UNEXPECTED_EOF");
+  });
+
+  it("a type error in the rule text is invalid-types, same as the AST route", () => {
+    const out = verifyModelDraftText(wrapText("http.response.code eq 900"));
+    expect(out.status).toBe("invalid-types");
+    expect(out.diagnostics[0]?.code).toBe("E_NUMBER_OUT_OF_RANGE");
+  });
+
+  it("the connective-explosion pathology (docs/spikes.md 0.4) cannot happen: free text has no schema-level escape valve", () => {
+    // The AST route's failure mode was the model emitting nothing but and/or nodes, doubling ids,
+    // until max_tokens cut it off with zero leaf conditions (E_SCHEMA_NOT_JSON on truncated JSON).
+    // Text output has no such connective-only shape to run away into: an unterminated attempt at
+    // the same pathology is still just truncated text, caught by the parser as a normal syntax
+    // error, not a new failure mode.
+    const out = verifyModelDraftText(wrapText("http.user_agent eq "));
+    expect(out.status).toBe("invalid-schema");
+    expect(out.ast).toBeNull();
   });
 });
 
