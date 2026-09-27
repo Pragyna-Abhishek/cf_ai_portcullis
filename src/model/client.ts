@@ -9,8 +9,13 @@ export type ModelRequest = Prompt & {
   jsonSchema: object;
 };
 
-/** Tokens billed for one call, and the neurons they cost on this model's published rate. */
-export type ModelUsage = { promptTokens: number; completionTokens: number; neurons: number };
+/**
+ * Tokens billed for one call, and the neurons they cost on this model's published rate.
+ * `maxTokens` is the completion cap the request was sent with (a request-side constant, not
+ * something the model reports), carried here so a caller with only the response in hand can tell
+ * whether the call was cut off. See `hitMaxTokens` in `RuleVersion["usage"]`.
+ */
+export type ModelUsage = { promptTokens: number; completionTokens: number; neurons: number; maxTokens: number };
 
 export type ModelResponse =
   /** The raw text the model returned. Not yet validated: data under suspicion. */

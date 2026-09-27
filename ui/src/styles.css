@@ -347,6 +347,30 @@ pre {
   color: var(--bad);
 }
 
+.attempt-usage {
+  font-size: 0.85rem;
+}
+
+.attempt-usage .warn {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.raw-output {
+  margin-top: 4px;
+  font-size: 0.85rem;
+}
+
+.raw-output summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.raw-output-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 mark {
   background: var(--warn);
   color: #000;

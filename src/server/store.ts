@@ -100,6 +100,14 @@ export function migrate(sql: SqlStorage): void {
   } catch {
     // Column already exists.
   }
+  // Added to make a failed draft attempt diagnosable: token accounting for the model call that
+  // produced it, as JSON (same convention as the `diagnostics` and `replay` columns). A Durable
+  // Object created before this change already has `rule_versions` without it.
+  try {
+    sql.exec("ALTER TABLE rule_versions ADD COLUMN usage TEXT");
+  } catch {
+    // Column already exists.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +221,7 @@ type RuleVersionRow = {
   attempt: number;
   status: string;
   raw_model_output: string;
+  usage: string | null;
   ast: string | null;
   text: string | null;
   replay: string | null;
@@ -220,10 +229,27 @@ type RuleVersionRow = {
   created_at: number;
 };
 
+function rowToRuleVersion(r: RuleVersionRow): RuleVersion {
+  return {
+    id: r.id,
+    incidentId: r.incident_id,
+    source: r.source === "naive-baseline" ? "naive-baseline" : "model",
+    attempt: r.attempt,
+    status: r.status as RuleVersion["status"],
+    rawModelOutput: r.raw_model_output,
+    usage: r.usage ? (JSON.parse(r.usage) as RuleVersion["usage"]) : null,
+    ast: r.ast ? (JSON.parse(r.ast) as RuleAST) : null,
+    text: r.text,
+    replay: r.replay ? (JSON.parse(r.replay) as ReplayResult) : null,
+    diagnostics: JSON.parse(r.diagnostics) as Diagnostic[],
+    createdAt: r.created_at,
+  };
+}
+
 export function saveRuleVersion(sql: SqlStorage, v: RuleVersion): void {
   sql.exec(
-    `INSERT INTO rule_versions (id, incident_id, source, attempt, status, raw_model_output, ast, text, replay, diagnostics, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO rule_versions (id, incident_id, source, attempt, status, raw_model_output, usage, ast, text, replay, diagnostics, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET status = excluded.status, ast = excluded.ast, text = excluded.text,
        replay = excluded.replay, diagnostics = excluded.diagnostics`,
     v.id,
@@ -232,6 +258,7 @@ export function saveRuleVersion(sql: SqlStorage, v: RuleVersion): void {
     v.attempt,
     v.status,
     v.rawModelOutput,
+    v.usage ? JSON.stringify(v.usage) : null,
     v.ast ? JSON.stringify(v.ast) : null,
     v.text,
     v.replay ? JSON.stringify(v.replay) : null,
@@ -242,20 +269,7 @@ export function saveRuleVersion(sql: SqlStorage, v: RuleVersion): void {
 
 export function getRuleVersion(sql: SqlStorage, id: string): RuleVersion | null {
   const r = sql.exec<RuleVersionRow>("SELECT * FROM rule_versions WHERE id = ?", id).toArray()[0];
-  if (!r) return null;
-  return {
-    id: r.id,
-    incidentId: r.incident_id,
-    source: r.source === "naive-baseline" ? "naive-baseline" : "model",
-    attempt: r.attempt,
-    status: r.status as RuleVersion["status"],
-    rawModelOutput: r.raw_model_output,
-    ast: r.ast ? (JSON.parse(r.ast) as RuleAST) : null,
-    text: r.text,
-    replay: r.replay ? (JSON.parse(r.replay) as ReplayResult) : null,
-    diagnostics: JSON.parse(r.diagnostics) as Diagnostic[],
-    createdAt: r.created_at,
-  };
+  return r ? rowToRuleVersion(r) : null;
 }
 
 /** Every model-drafted attempt for an incident, in attempt order. For the UI's attempt history. */
@@ -263,19 +277,7 @@ export function listDraftAttempts(sql: SqlStorage, incidentId: string): RuleVers
   return sql
     .exec<RuleVersionRow>("SELECT * FROM rule_versions WHERE incident_id = ? AND source = 'model' ORDER BY attempt ASC", incidentId)
     .toArray()
-    .map((r) => ({
-      id: r.id,
-      incidentId: r.incident_id,
-      source: "model" as const,
-      attempt: r.attempt,
-      status: r.status as RuleVersion["status"],
-      rawModelOutput: r.raw_model_output,
-      ast: r.ast ? (JSON.parse(r.ast) as RuleAST) : null,
-      text: r.text,
-      replay: r.replay ? (JSON.parse(r.replay) as ReplayResult) : null,
-      diagnostics: JSON.parse(r.diagnostics) as Diagnostic[],
-      createdAt: r.created_at,
-    }));
+    .map(rowToRuleVersion);
 }
 
 // ---------------------------------------------------------------------------

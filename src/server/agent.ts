@@ -456,12 +456,21 @@ export class IncidentAgent extends Agent<Env, AgentState> {
     const existing = store.getRuleVersion(this.db, id);
     if (existing) return id; // A retried step records the same attempt once.
     const raw = response.kind === "ok" ? response.raw : "";
+    const usage: RuleVersion["usage"] =
+      response.kind === "ok" && response.usage
+        ? {
+            completionTokens: response.usage.completionTokens,
+            maxTokens: response.usage.maxTokens,
+            hitMaxTokens: response.usage.completionTokens >= response.usage.maxTokens,
+          }
+        : null;
     const version: RuleVersion = {
       id,
       incidentId,
       source: "model",
       attempt,
       rawModelOutput: raw,
+      usage,
       ast: null,
       text: null,
       // Placeholder until validate runs; a draft is untrusted until then.
@@ -515,6 +524,7 @@ export class IncidentAgent extends Agent<Env, AgentState> {
       source: "naive-baseline",
       attempt: 0,
       rawModelOutput: "",
+      usage: null,
       ast: outcome.ast,
       text: outcome.text,
       status: outcome.status,

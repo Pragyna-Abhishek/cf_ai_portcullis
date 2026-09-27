@@ -248,6 +248,19 @@ export type RuleVersionStatus =
 /** Where a rule version came from. The baseline is generated in code, never by the model. */
 export type RuleVersionSource = "model" | "naive-baseline";
 
+/**
+ * Token accounting for the model call that produced a draft attempt, computed in code from the
+ * client's reported usage (CLAUDE.md invariant 5: the model never produces a number the operator
+ * sees). `hitMaxTokens` is `completionTokens >= maxTokens`: Workers AI's JSON-mode response for
+ * this model does not include a finish reason (checked against the current docs), so a hit
+ * token limit can only be inferred by comparing the two counts.
+ */
+export type ModelCallUsage = {
+  completionTokens: number;
+  maxTokens: number;
+  hitMaxTokens: boolean;
+};
+
 export type RuleVersion = {
   id: string;
   incidentId: string;
@@ -256,6 +269,11 @@ export type RuleVersion = {
   attempt: number;
   /** Exactly what the model returned, pre-validation. Kept for audit. */
   rawModelOutput: string;
+  /**
+   * Null when the client reported no usage (the fake model, or a call that errored before any
+   * tokens were billed). Set for every model-drafted attempt that returned a response.
+   */
+  usage: ModelCallUsage | null;
   /** Null when the output failed schema validation. */
   ast: RuleAST | null;
   /** Rendered by our printer from `ast`. Null when `ast` is null. */
