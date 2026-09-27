@@ -122,7 +122,12 @@ changelog, all UNVERIFIED for JSON mode support: `@cf/meta/llama-3.1-8b-instruct
 (`MODEL_ID` in `wrangler.jsonc`).
 
 Also from the docs: error `3036` means the daily neuron allocation is used up and `3040` means out
-of capacity. `src/model/workers-ai.ts` treats both like a 429, so the step retries with backoff.
+of capacity. A live probe of this account (docs/eval-results/README.md) returned `4006` for the
+same daily-allocation condition, so `src/model/workers-ai.ts` treats `3036`/`4006` as
+`quota-exhausted`, never retried at any level, and `3040`/429 as `rate-limited`, retried with
+backoff. Originally (Phase 0) both were treated alike as retryable; that was a bug, found after the
+2026-09-25 spikes had already spent the daily allocation retrying calls that could not succeed
+until the next day's reset.
 
 ## 0.2 CPU budget refresh per transport (MEASURED, partial)
 

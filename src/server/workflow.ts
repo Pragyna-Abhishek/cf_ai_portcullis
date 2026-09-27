@@ -21,7 +21,7 @@ import { mergeChunkReplays, type ChunkReplay } from "../core/rules/evaluate";
 import { RULE_JSON_SCHEMA } from "../core/rules/schema";
 import { findScenario } from "../core/scenarios";
 import type { ReplayResult, RuleVersionStatus, TrafficSummary } from "../core/types";
-import { requireOkResponse } from "../model/client";
+import { QuotaExhaustedError, requireOkResponse } from "../model/client";
 import type { IncidentAgent } from "./agent";
 import { modelFor } from "./model";
 import { CLASSIFY_SYMPTOM_TEMPLATES, DRAFT_RULE_TEMPLATES, HYPOTHESIZE_TEMPLATES, WRITE_REPORT_TEMPLATES } from "./prompts";
@@ -125,6 +125,7 @@ export class InvestigationWorkflow extends AgentWorkflow<IncidentAgent, Investig
           const model = modelFor(this.env);
           const prompt = buildClassifyPrompt(CLASSIFY_SYMPTOM_TEMPLATES, { symptom: p.symptom, signals: summary.signals });
           const response = await model.generateJson({ ...prompt, purpose: "classify-symptom", jsonSchema: CLASSIFY_JSON_SCHEMA });
+          await agent.recordModelOutcome(p.incidentId, response);
           return agent.classifySymptom(response);
         },
         (c) => c.intent,
@@ -145,6 +146,7 @@ export class InvestigationWorkflow extends AgentWorkflow<IncidentAgent, Investig
             lessons: memory.lessons,
           });
           const response = await model.generateJson({ ...prompt, purpose: "hypothesize", jsonSchema: HYPOTHESIZE_JSON_SCHEMA });
+          await agent.recordModelOutcome(p.incidentId, response);
           return agent.hypothesize(p.incidentId, response);
         },
         (h) => (h.fabricatedCitations.length ? `rejected: fabricated citations ${h.fabricatedCitations.join(", ")}` : (h.hypothesis ?? "none")),
@@ -167,7 +169,16 @@ export class InvestigationWorkflow extends AgentWorkflow<IncidentAgent, Investig
           const model = modelFor(this.env);
           const prompt = buildDraftRulePrompt(DRAFT_RULE_TEMPLATES, { symptom: p.symptom, summary, priorAttempts });
           const response = await model.generateJson({ ...prompt, purpose: "draft-rule", jsonSchema: RULE_JSON_SCHEMA });
-          requireOkResponse(response);
+          await agent.recordModelOutcome(p.incidentId, response);
+          try {
+            requireOkResponse(response);
+          } catch (e) {
+            // A daily quota error is never retried, at any level (CLAUDE.md): NonRetryableError
+            // stops the Workflow's own step-retry policy from spending the rest of the day's
+            // allocation on a call that cannot succeed until the daily reset.
+            if (e instanceof QuotaExhaustedError) throw new NonRetryableError(e.message);
+            throw e;
+          }
           return agent.recordDraft(p.incidentId, attempt, response);
         }),
       );
@@ -295,6 +306,7 @@ export class InvestigationWorkflow extends AgentWorkflow<IncidentAgent, Investig
           const outcome = { proposedRule: describeReplay(proposedReplay), recovery: describeReplay(recovery), approved: true };
           const prompt = buildReportPrompt(WRITE_REPORT_TEMPLATES, { symptom: p.symptom, hypothesis: hypothesis.hypothesis, outcome });
           const response = await model.generateJson({ ...prompt, purpose: "write-report", jsonSchema: WRITE_REPORT_JSON_SCHEMA });
+          await agent.recordModelOutcome(p.incidentId, response);
           return agent.writeReport(p.incidentId, response);
         },
         (r) => r.lesson ?? "no lesson recorded",

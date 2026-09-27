@@ -26,6 +26,8 @@ export type IncidentView = Incident & {
   /** Every evidence record produced for this incident, for the hypothesis's citations to resolve. */
   evidence: Evidence[];
   modelId: string;
+  /** "fake" when MODEL_MODE is fake; otherwise "quota-exhausted" until a real call succeeds again. */
+  modelStatus: "live" | "fake" | "quota-exhausted";
 };
 
 export type TrafficState = {

@@ -38,6 +38,10 @@ describe("investigation workflow, end to end with the fake model", () => {
     expect(baseline.legitimateBlocked).toBeGreaterThan(replay.legitimateBlocked);
     expect(view?.steps.map((s) => s.name)).toContain("wait-for-approval");
     expect(view?.modelId).toBe("fake");
+    // Phase 7 (quota work): the fake model always reports "fake", never "quota-exhausted", and
+    // reports no usage, so the neuron total for a fake-model incident stays zero.
+    expect(view?.modelStatus).toBe("fake");
+    expect(view?.modelNeuronsUsed).toBe(0);
     // Phase 4: the hypothesis cites real evidence, and the cited evidence is in the ledger.
     expect(incident.hypothesis).toContain("ev_4");
     expect(view?.evidence.some((e) => e.id === "ev_4" && e.kind === "breakdown")).toBe(true);

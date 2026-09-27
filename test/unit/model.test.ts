@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { aggregateChunk, finalizeSummary } from "../../src/core/aggregator";
 import { buildDraftRulePrompt, renderTemplate } from "../../src/core/prompt";
 import { generateAll } from "../../src/core/simulator";
-import { requireOkResponse } from "../../src/model/client";
+import { QuotaExhaustedError, requireOkResponse } from "../../src/model/client";
 import { cannedModel, FakeModelClient } from "../../src/model/fake";
-import { classifyError, toResponse, WorkersAiModelClient } from "../../src/model/workers-ai";
+import { classifyError, neuronsForUsage, toResponse, WorkersAiModelClient } from "../../src/model/workers-ai";
 import { RULE_JSON_SCHEMA } from "../../src/core/rules/schema";
 import { smallScenario } from "./helpers";
 
@@ -102,22 +102,40 @@ describe("Workers AI client", () => {
       "@cf/test",
     );
     const r = await client.generateJson({ purpose: "draft-rule", system: "s", user: "u", jsonSchema: RULE_JSON_SCHEMA });
-    expect(r).toEqual({ kind: "ok", raw: '{"rule":{"kind":"compare"}}' });
+    expect(r).toEqual({ kind: "ok", raw: '{"rule":{"kind":"compare"}}', usage: null });
     expect(seen[0]?.["response_format"]).toEqual({ type: "json_schema", json_schema: RULE_JSON_SCHEMA });
     expect(seen[0]?.["stream"]).toBeUndefined();
   });
 
   it("keeps a string response verbatim", () => {
-    expect(toResponse({ response: "{not json" })).toEqual({ kind: "ok", raw: "{not json" });
+    expect(toResponse({ response: "{not json" })).toEqual({ kind: "ok", raw: "{not json", usage: null });
     expect(toResponse({})).toMatchObject({ kind: "error" });
     expect(toResponse({ response: null })).toMatchObject({ kind: "error" });
   });
 
-  it("classifies provider errors", () => {
+  it("reads usage from the response and converts it to neurons at this model's published rate", () => {
+    const r = toResponse({ response: "{}", usage: { prompt_tokens: 1000, completion_tokens: 100 } });
+    expect(r).toMatchObject({ kind: "ok", usage: { promptTokens: 1000, completionTokens: 100 } });
+    if (r.kind !== "ok" || !r.usage) throw new Error("expected usage");
+    // 1000/1e6 * 26,668 + 100/1e6 * 204,805
+    expect(r.usage.neurons).toBeCloseTo(26.668 + 20.4805, 6);
+  });
+
+  it("classifies provider errors: 3036/4006 are quota-exhausted, not rate-limited", () => {
     expect(classifyError(new Error("JSON Mode couldn't be met")).kind).toBe("json-mode-failed");
     expect(classifyError(new Error("3040: Out of capacity")).kind).toBe("rate-limited");
     expect(classifyError(new Error("status 429")).kind).toBe("rate-limited");
+    expect(classifyError(new Error("3036: daily allocation used up")).kind).toBe("quota-exhausted");
+    expect(classifyError(new Error("4006: you have used up your daily free allocation of 10,000 neurons")).kind).toBe(
+      "quota-exhausted",
+    );
     expect(classifyError("boom").kind).toBe("error");
+  });
+
+  it("neuronsForUsage matches the published per-million-token rates", () => {
+    expect(neuronsForUsage(1_000_000, 0)).toBe(26_668);
+    expect(neuronsForUsage(0, 1_000_000)).toBe(204_805);
+    expect(neuronsForUsage(0, 0)).toBe(0);
   });
 
   it("turns a thrown binding error into a response, not an exception", async () => {
@@ -158,5 +176,16 @@ describe("requireOkResponse (Phase 6: model rate limiting)", () => {
 
   it("throws a descriptive error on a transport error", () => {
     expect(() => requireOkResponse({ kind: "error", message: "connection reset" })).toThrow(/model call failed \(error\): connection reset/);
+  });
+
+  it("throws QuotaExhaustedError, not a plain Error, on quota-exhausted, so callers can refuse to retry it", () => {
+    let thrown: unknown;
+    try {
+      requireOkResponse({ kind: "quota-exhausted", message: "3036: daily allocation used up" });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(QuotaExhaustedError);
+    expect((thrown as Error).message).toMatch(/model call failed \(quota-exhausted\): 3036/);
   });
 });

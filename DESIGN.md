@@ -256,6 +256,10 @@ Additions made during implementation, each for a stated reason:
   code, so it goes through the same printer, parser and replay.
 - `Incident.baselineRuleVersionId`, `recovery`, `failureReason`: what the UI shows beside the
   proposal, the post-apply measurement, and why a failed incident failed.
+- `Incident.modelNeuronsUsed`: a running total of neurons billed across this incident's model
+  calls, computed in code from each response's token usage and the model's published per-million
+  rate (never model produced, CLAUDE.md invariant 5). The operator needs to see the real cost of
+  an investigation against the account's daily allocation, not guess at it.
 
 ```ts
 // ---------------------------------------------------------------------------
@@ -558,6 +562,12 @@ export type Incident = {
   report: string | null;
   /** One sentence, retrieved by later investigations in the same family. */
   lesson: string | null;
+  /**
+   * Neurons billed across every model call this incident has made so far, computed in code from
+   * each response's token usage (never model produced). Zero for the fake model, which reports no
+   * usage. Accumulates across classify, hypothesize, every draft attempt, and write-report.
+   */
+  modelNeuronsUsed: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -892,7 +902,8 @@ The README will carry measured numbers or state that none exist yet.
 | Approval times out after 7 days | `waitForApproval` throws (it wraps `waitForEvent`) | Caught; incident moves to `timed-out`. Nothing is applied |
 | Operator rejects | `WorkflowRejectedError` | Incident moves to `rejected`, reason recorded. Nothing applied |
 | Durable Object evicted mid-run | Not observable from inside | Workflow unaffected. See section 8 |
-| Workers AI rate limited | HTTP 429 | Step retry with exponential backoff. The eval harness avoids this via caching |
+| Workers AI rate limited (429, 3040 out of capacity) | HTTP error code | Step retry with exponential backoff. The eval harness avoids this via caching |
+| Workers AI daily neuron allocation used up (3036, 4006) | HTTP error code | Never retried, at any level: `requireOkResponse` throws `QuotaExhaustedError`, and the draft step wraps it as `NonRetryableError` so the Workflow does not spend the rest of the day's allocation retrying a call that cannot succeed until the daily reset. The eval harness stops the whole run, keeping its cache |
 | Workflow tracking table grows unbounded | `cf_agents_workflows` row count | Retention policy: delete `complete` and `errored` tracking rows older than 7 days. The SDK does not do this for us |
 | Any other step exhausts its retries (Phase 6) | `onWorkflowError` (Agent lifecycle callback) | Catch-all: any step's error that is not one of the specific cases above still ends the incident in `failed` with the thrown message, never a silent hang. `test/integration/failure-injection.test.ts` forces every step in the table in section 8 to error (or, for one step, to time out) and asserts this |
 

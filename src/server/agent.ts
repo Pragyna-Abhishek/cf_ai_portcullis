@@ -35,6 +35,10 @@ const TERMINAL: readonly IncidentStatus[] = ["applied", "rejected", "failed", "t
 const MAX_ID_CHARS = 100;
 
 const SETTING_SCENARIO_ID = "scenarioId";
+/** Set to a timestamp the moment any real model call returns quota-exhausted, cleared the moment
+ * one returns ok again. Durable (survives eviction) because the daily quota outlives any one
+ * incident or investigation. */
+const SETTING_MODEL_QUOTA_EXHAUSTED_AT = "modelQuotaExhaustedAt";
 const WORKFLOW_TRACKING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The registry is the only source of scenario definitions; SCENARIOS[0] is the default. */
@@ -173,6 +177,7 @@ export class IncidentAgent extends Agent<Env, AgentState> {
       evidenceIds: [],
       report: null,
       lesson: null,
+      modelNeuronsUsed: 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -409,6 +414,25 @@ export class IncidentAgent extends Agent<Env, AgentState> {
       store.saveLesson(this.db, { scenarioFamily: def.scenario.family, lesson, incidentId, createdAt: Date.now() });
     }
     return { report, lesson };
+  }
+
+  /**
+   * Called by the Workflow once per model call, for every purpose, before any purpose-specific
+   * parsing. Tracks the two things the UI needs that no single per-purpose parser (classifySymptom,
+   * hypothesize, writeReport, recordDraft) owns on its own: whether the account is currently
+   * quota-exhausted, and the running neuron total for this incident. Never affects retries; that
+   * is `requireOkResponse`'s job (src/model/client.ts).
+   */
+  recordModelOutcome(incidentId: string, response: ModelResponse): void {
+    if (response.kind === "quota-exhausted") {
+      store.setSetting(this.db, SETTING_MODEL_QUOTA_EXHAUSTED_AT, String(Date.now()));
+      return;
+    }
+    if (response.kind !== "ok") return;
+    store.setSetting(this.db, SETTING_MODEL_QUOTA_EXHAUSTED_AT, "");
+    if (!response.usage) return;
+    const incident = this.incidentOrThrow(incidentId);
+    this.saveIncident({ ...incident, modelNeuronsUsed: incident.modelNeuronsUsed + response.usage.neurons });
   }
 
   /** Persist exactly what the model returned, before anything interprets it. */
@@ -728,8 +752,19 @@ export class IncidentAgent extends Agent<Env, AgentState> {
         },
         summary: summaryRaw ? (JSON.parse(summaryRaw) as TrafficSummary) : null,
         modelId: this.env.MODEL_MODE === "fake" ? "fake" : this.env.MODEL_ID,
+        modelStatus: this.modelStatus(),
       };
     });
+  }
+
+  /**
+   * "fake" always wins (the fake model never returns quota-exhausted, so there is nothing to
+   * distinguish it from). Otherwise "quota-exhausted" until a real model call succeeds again and
+   * clears the flag in recordModelOutcome, or "live".
+   */
+  private modelStatus(): "live" | "fake" | "quota-exhausted" {
+    if (this.env.MODEL_MODE === "fake") return "fake";
+    return store.getSetting(this.db, SETTING_MODEL_QUOTA_EXHAUSTED_AT) ? "quota-exhausted" : "live";
   }
 }
 

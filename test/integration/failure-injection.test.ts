@@ -111,6 +111,29 @@ describe("failure injection: model rate limiting (Phase 6)", () => {
   });
 });
 
+describe("failure injection: model quota exhaustion (CLAUDE.md: never retried, at any level)", () => {
+  it("a draft-rule call that fails with a quota-exhausted-shaped error fails the incident immediately, with the message intact", async () => {
+    // src/model/client.ts's requireOkResponse throws QuotaExhaustedError for a "quota-exhausted"
+    // response, and draft-rule-attempt-1's real (unmocked) step body wraps that as
+    // NonRetryableError so the Workflow's own step-retry policy never re-runs it. Mocking the step
+    // error here reproduces the exact wording that failure produces, the same pattern as the
+    // rate-limited case above.
+    const agent = await agentNamed("fi-quota-exhausted");
+    await using introspector = await introspectWorkflow(env.INVESTIGATION_WORKFLOW);
+    await introspector.modifyAll(async (m) => {
+      await m.disableRetryDelays();
+      await m.mockStepError(
+        { name: "draft-rule-attempt-1" },
+        new Error("model call failed (quota-exhausted): 3036: daily allocation used up"),
+      );
+    });
+    const { incidentId } = await agent.startInvestigation(SYMPTOM);
+    const done = await waitForIncident(agent, incidentId, ["failed", "awaiting-approval"]);
+    expect(done.status).toBe("failed");
+    expect(done.failureReason).toMatch(/model call failed \(quota-exhausted\): 3036/);
+  });
+});
+
 describe("step timings are recorded and surfaced (Phase 6)", () => {
   it("a completed step has a non-null duration; a running or waiting one does not", async () => {
     const agent = await agentNamed("fi-timings");

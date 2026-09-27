@@ -303,6 +303,12 @@ export type Incident = {
   report: string | null;
   /** One sentence, retrieved by later investigations in the same family. */
   lesson: string | null;
+  /**
+   * Neurons billed across every model call this incident has made so far, computed in code from
+   * each response's token usage (never model produced). Zero for the fake model, which reports no
+   * usage. Accumulates across classify, hypothesize, every draft attempt, and write-report.
+   */
+  modelNeuronsUsed: number;
   createdAt: number;
   updatedAt: number;
 };
