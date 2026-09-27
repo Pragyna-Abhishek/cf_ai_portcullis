@@ -65,10 +65,11 @@ export function toResponse(result: unknown): ModelResponse {
 export function classifyError(e: unknown): ModelResponse {
   const message = e instanceof Error ? e.message : String(e);
   if (/JSON Mode couldn't be met/i.test(message)) return { kind: "json-mode-failed", message };
-  // 3036 and 4006 are both documented as "daily free neuron allocation used up" (docs/spikes.md
-  // 0.1, docs/eval-results/README.md): a standing condition for the rest of the day, never worth
-  // retrying. 429 and 3040 (out of capacity) are transient and worth backing off from. Codes from
-  // workers-ai/platform/errors.mdx.
+  // 3036 is Cloudflare's documented "daily free neuron allocation used up" code (Workers AI
+  // platform/errors.mdx). 4006 is not in that page; it is what this account observed for the same
+  // condition (docs/spikes.md 0.1, docs/eval-results/README.md), so it is treated the same way.
+  // Both are a standing condition for the rest of the day, never worth retrying. 429 and 3040 (out
+  // of capacity, documented) are transient and worth backing off from instead.
   if (/\b(3036|4006)\b/.test(message)) return { kind: "quota-exhausted", message };
   if (/\b(429|3040)\b|rate.?limit|capacity/i.test(message)) return { kind: "rate-limited", message };
   return { kind: "error", message };

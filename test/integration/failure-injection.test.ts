@@ -7,6 +7,9 @@
 import { env } from "cloudflare:workers";
 import { introspectWorkflow, introspectWorkflowInstance } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { CLASSIFY_JSON_SCHEMA, HYPOTHESIZE_JSON_SCHEMA } from "../../src/core/narrative-schema";
+import { RULE_JSON_SCHEMA } from "../../src/core/rules/schema";
+import type { AiRunner } from "../../src/model/workers-ai";
 import { agentNamed, waitForIncident } from "./helpers";
 
 const SYMPTOM = "login latency spiked and users are getting locked out";
@@ -111,26 +114,58 @@ describe("failure injection: model rate limiting (Phase 6)", () => {
   });
 });
 
+/**
+ * Swaps env.MODEL_MODE and env.AI for the duration of `fn`, so the Workflow's real (unmocked)
+ * model call goes through the real WorkersAiModelClient path instead of the fake model that every
+ * other integration test uses. Always restored, even if `fn` throws, since --no-isolate shares
+ * this env object across every test in the run.
+ */
+async function withScriptedAi<T>(run: AiRunner["run"], fn: () => Promise<T>): Promise<T> {
+  const originalMode = env.MODEL_MODE;
+  const originalAi = env.AI;
+  env.MODEL_MODE = "workers-ai";
+  env.AI = { run } as unknown as Ai;
+  try {
+    return await fn();
+  } finally {
+    env.MODEL_MODE = originalMode;
+    env.AI = originalAi;
+  }
+}
+
 describe("failure injection: model quota exhaustion (CLAUDE.md: never retried, at any level)", () => {
-  it("a draft-rule call that fails with a quota-exhausted-shaped error fails the incident immediately, with the message intact", async () => {
-    // src/model/client.ts's requireOkResponse throws QuotaExhaustedError for a "quota-exhausted"
-    // response, and draft-rule-attempt-1's real (unmocked) step body wraps that as
-    // NonRetryableError so the Workflow's own step-retry policy never re-runs it. Mocking the step
-    // error here reproduces the exact wording that failure produces, the same pattern as the
-    // rate-limited case above.
-    const agent = await agentNamed("fi-quota-exhausted");
+  it("a real draft-rule call that returns quota-exhausted fails the incident after exactly one model call, never retried", async () => {
+    // Regression test: an earlier version of this test used mockStepError, which replaces the
+    // step's entire body and so kept passing even after the NonRetryableError wrapping around
+    // requireOkResponse in workflow.ts was removed. This version runs the real (unmocked)
+    // draft-rule-attempt-1 step body against a scripted AI binding, so it actually exercises
+    // requireOkResponse -> QuotaExhaustedError -> NonRetryableError and would fail if that
+    // wrapping were removed (draft-rule-attempt-2 would then be attempted).
+    const agent = await agentNamed("fi-quota-exhausted-real");
     await using introspector = await introspectWorkflow(env.INVESTIGATION_WORKFLOW);
     await introspector.modifyAll(async (m) => {
       await m.disableRetryDelays();
-      await m.mockStepError(
-        { name: "draft-rule-attempt-1" },
-        new Error("model call failed (quota-exhausted): 3036: daily allocation used up"),
-      );
     });
-    const { incidentId } = await agent.startInvestigation(SYMPTOM);
-    const done = await waitForIncident(agent, incidentId, ["failed", "awaiting-approval"]);
+    let draftCalls = 0;
+    const done = await withScriptedAi(
+      async (_model, inputs) => {
+        const schema = (inputs as { response_format?: { json_schema?: unknown } }).response_format?.json_schema;
+        if (schema === RULE_JSON_SCHEMA) {
+          draftCalls++;
+          throw new Error("3036: daily allocation used up");
+        }
+        if (schema === CLASSIFY_JSON_SCHEMA) return { response: { intent: "credential-stuffing" } };
+        if (schema === HYPOTHESIZE_JSON_SCHEMA) return { response: { hypothesis: "a plausible hypothesis with no citations" } };
+        throw new Error("unexpected schema in test's scripted AI binding");
+      },
+      async () => {
+        const { incidentId } = await agent.startInvestigation(SYMPTOM);
+        return waitForIncident(agent, incidentId, ["failed", "awaiting-approval"]);
+      },
+    );
     expect(done.status).toBe("failed");
     expect(done.failureReason).toMatch(/model call failed \(quota-exhausted\): 3036/);
+    expect(draftCalls).toBe(1);
   });
 });
 
