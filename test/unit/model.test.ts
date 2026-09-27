@@ -5,7 +5,7 @@ import { buildDraftRulePrompt, renderTemplate } from "../../src/core/prompt";
 import { generateAll } from "../../src/core/simulator";
 import { QuotaExhaustedError, requireOkResponse } from "../../src/model/client";
 import { cannedModel, FakeModelClient } from "../../src/model/fake";
-import { classifyError, neuronsForUsage, toResponse, WorkersAiModelClient } from "../../src/model/workers-ai";
+import { classifyError, MAX_TOKENS, neuronsForUsage, toResponse, WorkersAiModelClient } from "../../src/model/workers-ai";
 import { RULE_JSON_SCHEMA } from "../../src/core/rules/schema";
 import { smallScenario } from "./helpers";
 
@@ -119,6 +119,9 @@ describe("Workers AI client", () => {
     if (r.kind !== "ok" || !r.usage) throw new Error("expected usage");
     // 1000/1e6 * 26,668 + 100/1e6 * 204,805
     expect(r.usage.neurons).toBeCloseTo(26.668 + 20.4805, 6);
+    // The request-side completion cap, not anything the model reported: recorded so a caller can
+    // tell a truncated draft from a short one.
+    expect(r.usage.maxTokens).toBe(MAX_TOKENS);
   });
 
   it("classifies provider errors: 3036/4006 are quota-exhausted, not rate-limited", () => {

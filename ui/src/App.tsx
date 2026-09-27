@@ -7,6 +7,7 @@
 import { useAgent } from "agents/react";
 import { useEffect, useMemo, useState } from "react";
 import { SCENARIOS } from "../../src/core/scenarios";
+import { excerpt } from "../../src/core/text-excerpt";
 import type { Diagnostic, ReplayResult, RuleVersion, TrafficSummary } from "../../src/core/types";
 import type { IncidentAgent } from "../../src/server/agent";
 import type { AgentState, IncidentView, TrafficState } from "../../src/server/views";
@@ -328,9 +329,46 @@ function AttemptHistory({ attempts }: { attempts: RuleVersion[] }) {
             <span className="step-status">{a.status}</span>
             {a.text && <pre className="rule-text">{a.text}</pre>}
             {a.diagnostics.length > 0 && <Diagnostics text={a.text} diagnostics={a.diagnostics} />}
+            {a.usage && <AttemptUsage usage={a.usage} />}
+            {a.rawModelOutput && <RawOutput text={a.rawModelOutput} />}
           </li>
         ))}
       </ol>
+    </details>
+  );
+}
+
+/** Token accounting for a draft attempt's model call, so a diagnosis of E_SCHEMA_NOT_JSON does
+ * not require guessing whether the call was cut off. `hitMaxTokens` is computed in code from the
+ * other two counts (CLAUDE.md invariant 5); the model produces none of this. */
+function AttemptUsage({ usage }: { usage: NonNullable<RuleVersion["usage"]> }) {
+  return (
+    <p className="muted attempt-usage">
+      {usage.completionTokens} / {usage.maxTokens} completion tokens
+      {usage.hitMaxTokens && <span className="warn"> — hit the token limit</span>}
+    </p>
+  );
+}
+
+const RAW_OUTPUT_EXCERPT_CHARS = 400;
+
+/**
+ * The model's raw output, before validation: untrusted text (CLAUDE.md invariant 3). Rendered as
+ * plain text only, via JSX text children, which React escapes -- never via
+ * dangerouslySetInnerHTML or any other path that would let it be interpreted as HTML.
+ */
+function RawOutput({ text }: { text: string }) {
+  const e = excerpt(text, RAW_OUTPUT_EXCERPT_CHARS);
+  return (
+    <details className="raw-output">
+      <summary>Raw model output ({e.length} characters{e.truncated ? ", truncated" : ""})</summary>
+      <pre className="raw-output-text">{e.head}</pre>
+      {e.truncated && (
+        <>
+          <p className="muted">… {e.length - e.head.length - e.tail.length} characters omitted …</p>
+          <pre className="raw-output-text">{e.tail}</pre>
+        </>
+      )}
     </details>
   );
 }

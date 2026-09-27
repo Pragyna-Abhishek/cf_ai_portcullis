@@ -10,6 +10,15 @@ export type AiRunner = { run(model: string, inputs: Record<string, unknown>): Pr
 const NEURONS_PER_MILLION_INPUT_TOKENS = 26_668;
 const NEURONS_PER_MILLION_OUTPUT_TOKENS = 204_805;
 
+/**
+ * The completion cap sent with every call, regardless of purpose. Not part of the JSON schema or
+ * prompt this change leaves untouched -- a transport parameter, recorded so a caller can compare
+ * it against `completion_tokens` and tell a truncated draft from a short one. Workers AI's
+ * JSON-mode response for this model has no finish-reason field (checked against the current docs
+ * mirror, cloudflare/cloudflare-docs, 2026-09-27), so that comparison is the only way to tell.
+ */
+export const MAX_TOKENS = 1024;
+
 export function neuronsForUsage(promptTokens: number, completionTokens: number): number {
   return (promptTokens / 1_000_000) * NEURONS_PER_MILLION_INPUT_TOKENS + (completionTokens / 1_000_000) * NEURONS_PER_MILLION_OUTPUT_TOKENS;
 }
@@ -29,7 +38,7 @@ export class WorkersAiModelClient implements ModelClient {
           { role: "user", content: request.user },
         ],
         response_format: { type: "json_schema", json_schema: request.jsonSchema },
-        max_tokens: 1024,
+        max_tokens: MAX_TOKENS,
         temperature: 0,
       });
     } catch (e) {
@@ -46,7 +55,7 @@ function usageFrom(result: object): ModelUsage | null {
   const promptTokens = (usage as { prompt_tokens?: unknown }).prompt_tokens;
   const completionTokens = (usage as { completion_tokens?: unknown }).completion_tokens;
   if (typeof promptTokens !== "number" || typeof completionTokens !== "number") return null;
-  return { promptTokens, completionTokens, neurons: neuronsForUsage(promptTokens, completionTokens) };
+  return { promptTokens, completionTokens, neurons: neuronsForUsage(promptTokens, completionTokens), maxTokens: MAX_TOKENS };
 }
 
 export function toResponse(result: unknown): ModelResponse {
