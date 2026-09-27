@@ -204,6 +204,25 @@ form button {
   color: var(--bad);
 }
 
+.model-status {
+  font-size: 0.75rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+}
+
+.model-status-live {
+  color: var(--good);
+}
+
+.model-status-fake {
+  color: var(--muted);
+}
+
+.model-status-quota-exhausted {
+  color: var(--bad);
+}
+
 .steps {
   list-style: none;
   padding: 0;

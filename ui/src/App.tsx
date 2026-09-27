@@ -252,7 +252,8 @@ function IncidentPanel({
         Incident <code>{incident.id.slice(0, 12)}</code> <span className={`status status-${incident.status}`}>{incident.status}</span>
       </h2>
       <p className="muted">
-        Symptom: "{incident.symptom}". Model: <code>{incident.modelId}</code>
+        Symptom: "{incident.symptom}". Model: <code>{incident.modelId}</code> <ModelStatus status={incident.modelStatus} />
+        {incident.modelNeuronsUsed > 0 && <> · {Math.round(incident.modelNeuronsUsed).toLocaleString()} neurons used</>}
       </p>
       {incident.failureReason && <p className="error">{incident.failureReason}</p>}
       {incident.hypothesis && <Cited className="hypothesis" label="Hypothesis" text={incident.hypothesis} />}
@@ -284,6 +285,15 @@ function IncidentPanel({
       {incident.summary && <Evidence summary={incident.summary} />}
     </section>
   );
+}
+
+/**
+ * Distinguishes a real model call from a scripted fake one, and both from the account's daily
+ * neuron allocation being used up (CLAUDE.md: never report an unmeasured or ambiguous state).
+ */
+function ModelStatus({ status }: { status: IncidentView["modelStatus"] }) {
+  const label = status === "quota-exhausted" ? "model unavailable: daily quota used" : status === "fake" ? "fake model" : "live model";
+  return <span className={`model-status model-status-${status}`}>{label}</span>;
 }
 
 /** Phase 6: step timings, so a reviewer can see where an incident spent its time. */
