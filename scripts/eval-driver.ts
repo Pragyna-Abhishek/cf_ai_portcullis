@@ -3,9 +3,18 @@
 // and PLAN.md's Phase 5 acceptance criteria.
 //
 // Usage:
-//   node scripts/run-eval.mjs                 # fake model, no credentials needed
-//   node scripts/run-eval.mjs --real           # real model, via the deployed spikes Worker
+//   node scripts/run-eval.mjs                        # fake model, no credentials needed
+//   node scripts/run-eval.mjs --real                  # real model, via the deployed spikes Worker
 //   node scripts/run-eval.mjs --real --spikes-url=https://portcullis-spikes.<sub>.workers.dev
+//   node scripts/run-eval.mjs --scenarios=cs-trap-carrier,scraper-basic  # only these scenarios
+//   node scripts/run-eval.mjs --runs=2                 # only the first 2 (after --scenarios, if given)
+//
+// --scenarios and --runs both shrink the harness's model-call footprint for a quick or
+// budget-limited run; combined with --real, that means fewer calls against the account's daily
+// neuron allocation. If any call comes back quota-exhausted, the harness stops the whole run
+// immediately with a clear message rather than burning the rest of the allocation on calls that
+// cannot succeed until the next day's reset (CLAUDE.md), and it keeps whatever the cache already
+// holds from calls that succeeded before that point.
 //
 // Bundled and run by scripts/run-eval.mjs, same pattern as scripts/spikes-driver.ts.
 
@@ -15,15 +24,24 @@ import { ResponseCache } from "../src/eval/cache";
 import { CachingModelClient, HttpModelClient } from "../src/eval/model-clients";
 import { cannedModel } from "../src/model/fake";
 import { SCENARIOS } from "../src/core/scenarios";
-import type { ModelClient } from "../src/model/client";
+import { QuotaExhaustedError, type ModelClient } from "../src/model/client";
 import { MAX_DRAFT_ATTEMPTS, type PromptTemplates } from "../src/core/prompt";
 import type { ScenarioFamily } from "../src/core/types";
+import { selectScenarios } from "../src/eval/select-scenarios";
 
 const args = process.argv.slice(2);
 const real = args.includes("--real");
 const spikesUrl = args.find((a) => a.startsWith("--spikes-url="))?.split("=")[1] ?? "https://portcullis-spikes.pragyna-portcullis.workers.dev";
 const cachePath = args.find((a) => a.startsWith("--cache="))?.split("=")[1] ?? ".eval-cache/responses.json";
 const outPath = args.find((a) => a.startsWith("--out="))?.split("=")[1] ?? `docs/eval-results/${real ? "real" : "fake"}.json`;
+
+const scenarioIdsArg = args.find((a) => a.startsWith("--scenarios="))?.split("=")[1];
+const runsArg = args.find((a) => a.startsWith("--runs="))?.split("=")[1];
+
+const SELECTED_SCENARIOS = selectScenarios(SCENARIOS, {
+  ids: scenarioIdsArg?.split(",").map((s) => s.trim()),
+  runs: runsArg === undefined ? undefined : Number(runsArg),
+});
 
 const templates: EvalTemplates = {
   draftRule: read("draft-rule"),
@@ -48,7 +66,7 @@ async function main() {
   // --- Main run: full pipeline, memory accumulated across the family in registry order. ---
   const lessonsByFamily = new Map<ScenarioFamily, string[]>();
   const main: ScenarioRunResult[] = [];
-  for (const def of SCENARIOS) {
+  for (const def of SELECTED_SCENARIOS) {
     const lessons = (lessonsByFamily.get(def.scenario.family) ?? []).slice(-3);
     const result = await runScenario(def, def.scenario.seed, clientFor(def.scenario.id), templates, {
       maxAttempts: MAX_DRAFT_ATTEMPTS,
@@ -66,14 +84,14 @@ async function main() {
 
   // --- Ablation 1: no retry loop. Draft only, single attempt, no narrative steps. ---
   const noRetry: ScenarioRunResult[] = [];
-  for (const def of SCENARIOS) {
+  for (const def of SELECTED_SCENARIOS) {
     const result = await runScenario(def, def.scenario.seed, clientFor(def.scenario.id), templates, { maxAttempts: 1, lessons: [], runNarrativeSteps: false });
     noRetry.push(result);
   }
 
   // --- Ablation 2: no memory. Full pipeline again, lessons always empty. ---
   const noMemory: ScenarioRunResult[] = [];
-  for (const def of SCENARIOS) {
+  for (const def of SELECTED_SCENARIOS) {
     const result = await runScenario(def, def.scenario.seed, clientFor(def.scenario.id), templates, {
       maxAttempts: MAX_DRAFT_ATTEMPTS,
       lessons: [],
@@ -86,7 +104,7 @@ async function main() {
 
   // --- Ablation 4: text output instead of AST. ---
   const textOutput: TextAblationResult[] = [];
-  for (const def of SCENARIOS) {
+  for (const def of SELECTED_SCENARIOS) {
     const result = await runTextAblation(def, def.scenario.seed, clientFor(def.scenario.id), templates);
     textOutput.push(result);
   }
@@ -203,4 +221,14 @@ function printTable(r: Report) {
   console.log(`ablation 4, text vs AST:     text parses ${r.ablations.textOutputInsteadOfAst.parsedOk}, text type-valid ${r.ablations.textOutputInsteadOfAst.typeValid} vs AST type-valid ${r.ablations.textOutputInsteadOfAst.astTypeValid}`);
 }
 
-await main();
+try {
+  await main();
+} catch (e) {
+  if (!(e instanceof QuotaExhaustedError)) throw e;
+  // Keep whatever the cache already holds from calls that succeeded before this one, so a later
+  // run does not pay for them again (CLAUDE.md, "Model access").
+  cache.save();
+  console.error(`\nStopped: Workers AI daily neuron allocation is used up (${e.message}).`);
+  console.error(`Cache kept at ${cachePath}. Re-run once the allocation resets; cached calls will not be repeated.`);
+  process.exitCode = 1;
+}

@@ -21,7 +21,7 @@ import { safetyScore, toReplayResult } from "../core/replay";
 import type { ScenarioDefinition } from "../core/scenarios";
 import { generateAll } from "../core/simulator";
 import type { ReplayResult, RuleVersionStatus, ScenarioFamily } from "../core/types";
-import type { ModelClient, ModelResponse } from "../model/client";
+import { QuotaExhaustedError, type ModelClient, type ModelResponse } from "../model/client";
 
 export type EvalTemplates = {
   draftRule: PromptTemplates;
@@ -50,7 +50,19 @@ export type ScenarioRunResult = {
   lesson: string | null;
 };
 
+/**
+ * A quota-exhausted response means the account cannot succeed again until the daily reset:
+ * stopping the whole harness run cleanly (main() catches this) is the only thing worth doing,
+ * rather than burning the rest of a scenario's retries, the rest of the scenarios, or the
+ * ablations on calls that are guaranteed to fail the same way. CLAUDE.md: never retry a quota
+ * error, at any level.
+ */
+function assertNotQuotaExhausted(response: ModelResponse): void {
+  if (response.kind === "quota-exhausted") throw new QuotaExhaustedError(response.message);
+}
+
 function outcomeFromResponse(response: ModelResponse): DraftOutcome {
+  assertNotQuotaExhausted(response);
   if (response.kind === "ok") return verifyModelDraft(response.raw);
   if (response.kind === "json-mode-failed") return modelFailureOutcome("json-mode-failed", response.message);
   return modelFailureOutcome("error", response.message);
@@ -153,16 +165,19 @@ export async function runScenario(def: ScenarioDefinition, seed: number, model: 
 
     const classifyPrompt = buildClassifyPrompt(templates.classify, { symptom: def.scenario.symptom, signals: summary.signals });
     const classifyResponse = await model.generateJson({ ...classifyPrompt, purpose: "classify-symptom", jsonSchema: CLASSIFY_JSON_SCHEMA });
+    assertNotQuotaExhausted(classifyResponse);
     const intent = parseClassifyIntent(classifyResponse);
 
     const hypothesizePrompt = buildHypothesizePrompt(templates.hypothesize, { symptom: def.scenario.symptom, intent, summary, lessons: opts.lessons });
     const hypothesizeResponse = await model.generateJson({ ...hypothesizePrompt, purpose: "hypothesize", jsonSchema: HYPOTHESIZE_JSON_SCHEMA });
+    assertNotQuotaExhausted(hypothesizeResponse);
     const { hypothesis, fabricated } = parseHypothesis(hypothesizeResponse, evidenceIds);
     hypothesisFabricated = fabricated;
 
     const outcomeForReport = { proposedRule: modelReplay, approved: modelReplay?.passesThresholds ?? false };
     const reportPrompt = buildReportPrompt(templates.writeReport, { symptom: def.scenario.symptom, hypothesis, outcome: outcomeForReport });
     const reportResponse = await model.generateJson({ ...reportPrompt, purpose: "write-report", jsonSchema: WRITE_REPORT_JSON_SCHEMA });
+    assertNotQuotaExhausted(reportResponse);
     lesson = parseReportLesson(reportResponse);
   }
 
@@ -198,6 +213,7 @@ export async function runTextAblation(def: ScenarioDefinition, seed: number, mod
   const summary = finalizeSummary(aggregateChunk(traffic, def.scenario.durationMs, def.scenario.symptomStatus), traffic.dictionary);
   const prompt = buildDraftRulePrompt(templates.draftRuleText, { symptom: def.scenario.symptom, summary });
   const response = await model.generateJson({ ...prompt, purpose: "draft-rule-text", jsonSchema: TEXT_RULE_JSON_SCHEMA });
+  assertNotQuotaExhausted(response);
   if (response.kind !== "ok") {
     return { scenarioId: def.scenario.id, parsedOk: false, typeValid: false, diagnosticCodes: [response.kind], latencyMs: Date.now() - t0 };
   }

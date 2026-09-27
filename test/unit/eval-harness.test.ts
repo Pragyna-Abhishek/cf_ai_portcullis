@@ -7,7 +7,7 @@ import { CachingModelClient } from "../../src/eval/model-clients";
 import { runScenario, runTextAblation, type EvalTemplates } from "../../src/eval/harness";
 import { MAX_DRAFT_ATTEMPTS } from "../../src/core/prompt";
 import { cannedModel, FakeModelClient } from "../../src/model/fake";
-import type { ModelClient, ModelRequest, ModelResponse } from "../../src/model/client";
+import { QuotaExhaustedError, type ModelClient, type ModelRequest, type ModelResponse } from "../../src/model/client";
 import { smallScenario } from "./helpers";
 
 function readTemplate(name: string) {
@@ -90,6 +90,37 @@ describe("eval harness (Phase 5)", () => {
     const result = await runTextAblation(def, def.scenario.seed, brokenText, templates);
     expect(result.parsedOk).toBe(false);
     expect(result.diagnosticCodes.length).toBeGreaterThan(0);
+  });
+
+  it("a quota-exhausted draft response throws QuotaExhaustedError immediately, not after exhausting the retry loop", async () => {
+    let calls = 0;
+    const quotaExhausted = new FakeModelClient(() => {
+      calls++;
+      return { kind: "quota-exhausted", message: "3036: daily allocation used up" };
+    });
+    await expect(
+      runScenario(def, def.scenario.seed, quotaExhausted, templates, { maxAttempts: MAX_DRAFT_ATTEMPTS, lessons: [], runNarrativeSteps: false }),
+    ).rejects.toBeInstanceOf(QuotaExhaustedError);
+    expect(calls).toBe(1);
+  });
+
+  it("a quota-exhausted narrative-step response (classify/hypothesize/write-report) also throws, not silently degrades", async () => {
+    const canned = cannedModel();
+    const quotaOnHypothesize: ModelClient = {
+      modelId: "test",
+      async generateJson(request: ModelRequest): Promise<ModelResponse> {
+        if (request.purpose === "hypothesize") return { kind: "quota-exhausted", message: "3036: daily allocation used up" };
+        return canned.generateJson(request);
+      },
+    };
+    await expect(
+      runScenario(def, def.scenario.seed, quotaOnHypothesize, templates, { maxAttempts: MAX_DRAFT_ATTEMPTS, lessons: [], runNarrativeSteps: true }),
+    ).rejects.toBeInstanceOf(QuotaExhaustedError);
+  });
+
+  it("text-output ablation: a quota-exhausted response throws QuotaExhaustedError", async () => {
+    const quotaExhausted = new FakeModelClient(() => ({ kind: "quota-exhausted", message: "4006: used up your daily free allocation" }));
+    await expect(runTextAblation(def, def.scenario.seed, quotaExhausted, templates)).rejects.toBeInstanceOf(QuotaExhaustedError);
   });
 });
 

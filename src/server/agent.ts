@@ -35,6 +35,18 @@ const TERMINAL: readonly IncidentStatus[] = ["applied", "rejected", "failed", "t
 const MAX_ID_CHARS = 100;
 
 const SETTING_SCENARIO_ID = "scenarioId";
+/** Set to a timestamp the moment any real model call returns quota-exhausted, cleared the moment
+ * one returns ok again. Durable (survives eviction) because the daily quota outlives any one
+ * incident or investigation. Also treated as stale (modelStatus reads "live") once the UTC day it
+ * was set on has passed, since Workers AI's daily free allocation resets at 00:00 UTC and nothing
+ * else clears the flag if the account happens to make no real model call the next day. */
+const SETTING_MODEL_QUOTA_EXHAUSTED_AT = "modelQuotaExhaustedAt";
+
+/** YYYY-MM-DD in UTC, for comparing two timestamps fall on the same day as the 00:00 UTC quota reset. */
+function utcDayKey(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+}
 const WORKFLOW_TRACKING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The registry is the only source of scenario definitions; SCENARIOS[0] is the default. */
@@ -173,6 +185,7 @@ export class IncidentAgent extends Agent<Env, AgentState> {
       evidenceIds: [],
       report: null,
       lesson: null,
+      modelNeuronsUsed: 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -411,6 +424,32 @@ export class IncidentAgent extends Agent<Env, AgentState> {
     return { report, lesson };
   }
 
+  /**
+   * Called by the Workflow once per model call, for every purpose, before any purpose-specific
+   * parsing. Tracks the two things the UI needs that no single per-purpose parser (classifySymptom,
+   * hypothesize, writeReport, recordDraft) owns on its own: whether the account is currently
+   * quota-exhausted, and the running neuron total for this incident. Never affects retries; that
+   * is `requireOkResponse`'s job (src/model/client.ts).
+   */
+  recordModelOutcome(incidentId: string, response: ModelResponse): void {
+    if (response.kind === "quota-exhausted") {
+      store.setSetting(this.db, SETTING_MODEL_QUOTA_EXHAUSTED_AT, String(this.now()));
+      // Refresh here rather than relying on the step's own recordStep call to do it: this method
+      // must be self-contained so modelStatus() reflects the change the instant it is called, not
+      // only once something else happens to touch the state.
+      this.refreshState();
+      return;
+    }
+    if (response.kind !== "ok") return;
+    store.setSetting(this.db, SETTING_MODEL_QUOTA_EXHAUSTED_AT, "");
+    if (!response.usage) {
+      this.refreshState();
+      return;
+    }
+    const incident = this.incidentOrThrow(incidentId);
+    this.saveIncident({ ...incident, modelNeuronsUsed: incident.modelNeuronsUsed + response.usage.neurons });
+  }
+
   /** Persist exactly what the model returned, before anything interprets it. */
   recordDraft(incidentId: string, attempt: number, response: ModelResponse): string {
     const id = `rv_${incidentId}_${attempt}`;
@@ -628,6 +667,12 @@ export class IncidentAgent extends Agent<Env, AgentState> {
     return store.pruneWorkflowTracking(this.db, olderThanMs, Date.now());
   }
 
+  /** Test-only: recompute state.incidents[].modelStatus against the current (possibly
+   * setClockForTest-fixed) clock, without any other state change to trigger it. */
+  refreshStateForTest(): void {
+    this.refreshState();
+  }
+
   // =========================================================================
   // Workflow lifecycle callbacks
   // =========================================================================
@@ -728,8 +773,34 @@ export class IncidentAgent extends Agent<Env, AgentState> {
         },
         summary: summaryRaw ? (JSON.parse(summaryRaw) as TrafficSummary) : null,
         modelId: this.env.MODEL_MODE === "fake" ? "fake" : this.env.MODEL_ID,
+        modelStatus: this.modelStatus(),
       };
     });
+  }
+
+  /**
+   * "fake" always wins (the fake model never returns quota-exhausted, so there is nothing to
+   * distinguish it from). Otherwise "quota-exhausted" until a real model call succeeds again and
+   * clears the flag in recordModelOutcome, or until the UTC day it was set on has passed (the
+   * daily allocation resets at 00:00 UTC), or "live".
+   */
+  private modelStatus(): "live" | "fake" | "quota-exhausted" {
+    if (this.env.MODEL_MODE === "fake") return "fake";
+    const raw = store.getSetting(this.db, SETTING_MODEL_QUOTA_EXHAUSTED_AT);
+    if (!raw) return "live";
+    const setAt = Number(raw);
+    if (!Number.isFinite(setAt) || utcDayKey(setAt) !== utcDayKey(this.now())) return "live";
+    return "quota-exhausted";
+  }
+
+  /** Test-only: fixes the clock modelStatus and recordModelOutcome use to this timestamp, so the
+   * UTC-day reset boundary can be exercised without waiting real time. Null restores the real clock. */
+  private clockForTest: number | null = null;
+  setClockForTest(fixedMs: number | null): void {
+    this.clockForTest = fixedMs;
+  }
+  private now(): number {
+    return this.clockForTest ?? Date.now();
   }
 }
 
