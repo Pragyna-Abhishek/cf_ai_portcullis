@@ -308,3 +308,85 @@ matters only inside a network-sandboxed dev container like the one these spikes 
 `node scripts/run-spikes.mjs` fails with a "Host not in allowlist" body instead of JSON, run
 `node --use-env-proxy dist/spikes/driver.mjs <args>` directly after the `esbuild` step instead
 (Node 22's experimental env-proxy support). Not needed against a real network with no egress proxy.
+
+## 2026-09-27: investigating the Sep 25 neuron burst
+
+The Cloudflare dashboard showed 15.52k neurons used in the three days before this entry, all on
+`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, in a single burst around 2026-09-25, and zero before or
+since (today's usage: 0 of 10,000). This contradicted the standing claim elsewhere in this repo that
+the daily allocation "has been exhausted since Phase 0." This section records what was found.
+
+**What produced the burst.** Git history places every account-touching command in one sitting on
+2026-09-25, between 21:45 and 22:22 UTC:
+
+- `node scripts/run-spikes.mjs <url> structured 10`, run twice: once against the original nested
+  `$ref` schema (30 calls, each running to `max_tokens: 1024` before truncation, 0/30 valid — this is
+  the run recorded as spike 0.4's headline result), and once again after flattening the schema (spike
+  0.4's "fallback 1"): 30 more attempts, but only 12 of those actually reached the model, because
+  18/30 came back rate-limited from calls made in the same back-to-back run.
+- A single manual follow-up call with `max_tokens` raised from 1024 to 4096, made to see the model's
+  output past the previous truncation point while diagnosing the failure mode (recorded under
+  fallback 1's write-up).
+- `node scripts/run-spikes.mjs <url> model-rate 400`: 400 calls with a tiny prompt and
+  `max_tokens: 16`, run to find a rate-limit ceiling (spike 0.1). None was found; all 400 succeeded.
+
+So: roughly 42 near-max-output structured-draft calls, plus 400 tiny probe calls, plus one large
+`max_tokens` diagnostic call, all in one sitting. Rough neuron math (1,450 input tokens per draft
+call per spike 0.1's own estimate, up to 1,024 output tokens; ~50 input tokens and 16 output tokens
+per rate probe): about 10.4k neurons from the structured-output calls, about 1.8k from the rate
+probes, and about 0.9k from the one 4096-token diagnostic call, roughly 13.1k total. That is the
+same order of magnitude as the dashboard's 15.52k and is consistent with a single burst on one
+model; it is an estimate from token-count assumptions, not a reconciliation against a per-call log,
+so it is not exact.
+
+**Retries: none from application code, but the classifier amplified real quota errors.** The spike
+driver itself (`scripts/spikes-driver.ts`) has no retry or backoff around its `fetch` calls, so the
+burst above reflects calls actually issued, not retries of a smaller number. Separately, and this is
+the actual bug found: `src/model/workers-ai.ts`'s `classifyError` (before this investigation's fix)
+mapped Workers AI's `3036` (daily allocation used up) to the same `"rate-limited"` kind as `3040`
+(transient, out of capacity) and HTTP `429`. The Workflow's `modelCall` step-retry policy (2
+retries, 5 s exponential backoff) then retried a `3036` exactly like a transient failure, which
+cannot help: the daily allocation does not refill on a step's retry timescale. This did not cause
+the Sep 25 burst itself (that was live spike-driver traffic, not Workflow retries), but it meant any
+production investigation that started after the quota was hit would have compounded the damage.
+
+**Worst-case model calls per investigation.** The Workflow calls the model at four points:
+`classify-symptom`, `hypothesize`, `draft-rule-attempt-{1..3}` (`MAX_DRAFT_ATTEMPTS = 3`), and
+`write-report`. Only the draft-rule step throws on a non-ok response
+(`requireOkResponse`, `src/model/client.ts`); classify/hypothesize/write-report degrade gracefully on
+any non-ok response and do not retry. The draft step's `modelCall` retry policy allows up to 3
+physical attempts per logical call (1 initial + 2 retries). So:
+
+- Normal case (first draft attempt succeeds, no transport errors): 4 physical model calls
+  (classify + hypothesize + 1 draft + report).
+- Worst case (all 3 draft attempts needed, and every one of them hits a retryable failure that
+  exhausts its step's retry budget): 1 (classify) + 1 (hypothesize) + 3 attempts x 3 physical calls
+  each (9) + 1 (report) = 14 physical model calls per investigation.
+  (An earlier estimate in this investigation, before checking `agent.ts`, assumed
+  classify/hypothesize/write-report also retried on a bad response and arrived at 18; they do not,
+  since they never throw, so 14 is the corrected figure.) With the fix in this branch, a
+  `quota-exhausted` (3036/4006) draft response is never retried at all: it fails the incident on the
+  first attempt instead of consuming the retry budget.
+
+**Exact error codes and messages found in this repo's records, quoted:**
+
+- `docs/spikes.md` (pre-existing, spike 0.1): "error `3036` means the daily neuron allocation is used
+  up and `3040` means out of capacity."
+- `docs/eval-results/README.md`: a direct probe of the deployed spikes Worker's `/model/probe`
+  returned `"4006: you have used up your daily free allocation of 10,000 neurons"`.
+- `docs/spikes.md` (pre-existing, spike 0.4 fallback 2 write-up): "the account started returning
+  error `3036`/`4006` ('used up your daily free allocation') partway through verification."
+
+No occurrence of Workers AI's documented `"JSON Mode couldn't be met"` error was found anywhere in
+this repo's records; every 0.4 failure was a schema/shape failure on ordinarily-returned text, not
+that error.
+
+**What this means for the "exhausted since Phase 0" claim.** README.md, DESIGN.md, PLAN.md,
+EXPLAINER.md, PROMPTS.md and `docs/eval-results/README.md` all state, in present tense, that the
+account's daily neuron quota "has been exhausted since Phase 0" or "is currently exhausted." Those
+statements were accurate on 2026-09-25, the day they were written, but a Workers AI daily allocation
+resets daily; nothing in this repo's records shows anyone re-attempted a real-model call on any day
+since. The accurate statement is that the quota was exhausted on 2026-09-25 by the spikes above, and
+spike 0.4's fallback 2 (the type-split schema) has not been re-measured since — that is a "not yet
+attempted again" situation, not a standing "still exhausted" one. Those documents have not been
+rewritten as part of this entry; this is a note that they are due for a pass, not a fix.
