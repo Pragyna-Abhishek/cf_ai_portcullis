@@ -1015,8 +1015,8 @@ Explicitly out of scope. Listed so that the absence of each is a decision rather
 4. ~~Measured requests-per-10 ms~~. Closed: `CHUNK_SIZE = 500`, `requestCount = 6000`, measured
    locally (docs/spikes.md, 0.3). Re-check `exceededCpu` on the account.
 5. Grammar. Implemented as section 7 describes; Abhishek to review and own it.
-6. Repo name. The assignment specifies `cf_sw_project`; this repository is `cf-swe-project`. Worth
-   reconciling before submission since the name was an explicit requirement.
+6. ~~Repo name.~~ The assignment specifies `cf_ai_portcullis`-shaped naming; this repository was
+   `cf-swe-project` and has been renamed to `cf_ai_portcullis`. Reconciled.
 7. ~~Nothing has been deployed~~. `spikes/` is deployed to `pragyna-portcullis.workers.dev`
    (docs/spikes.md). The main app (`portcullis`) deploy is tracked separately in PLAN.md's Phase 1
    status.
