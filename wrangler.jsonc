@@ -31,5 +31,17 @@
     "MODEL_MODE": "workers-ai",
     "MODEL_ID": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   },
+  // Required by `wrangler preview` (used by the Cloudflare Workers Builds PR-preview deploy
+  // step; `wrangler deploy` for the real environment does not need this block). MODEL_MODE is
+  // "fake" here, not "workers-ai": every PR push would otherwise trigger a preview deploy that
+  // spends this account's daily Workers AI neuron allocation for no reviewer benefit, and could
+  // starve a real investigation on the deployed site of that same day's quota.
+  "previews": {
+    "vars": {
+      "MODEL_MODE": "fake",
+      "MODEL_ID": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    },
+    "ai": { "binding": "AI" }
+  },
   "observability": { "enabled": true }
 }
