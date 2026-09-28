@@ -3,15 +3,14 @@
 Two kinds of prompt appear in this project:
 
 1. **Instructions to the coding assistant** (Claude Code) that built Portcullis, organized by phase
-   below. Only wording that was actually preserved is quoted. Where it was not preserved, this file
-   says so instead of reconstructing it.
+   below. The full wording of every instruction is in [PROMPT_HISTORY.md](PROMPT_HISTORY.md).
 2. **Runtime prompt templates** that Portcullis sends to Workers AI. These live in
    [prompts/](prompts/) and are reproduced verbatim at the end of this file.
 
-**Raw logs.** No raw session transcripts are committed to this repository, so there are no logs to
-link. The durable record of each session is its commits and pull requests (`git log`), because
-CLAUDE.md requires every commit message to say what changed and why. `prompts/` contains only the
-runtime templates; it holds no Cursor or Grok prompts.
+**Raw logs.** [PROMPT_HISTORY.md](PROMPT_HISTORY.md) is the log of the Claude Code sessions,
+exported by the maintainer. It has every instruction verbatim and the assistant's replies, in six
+sessions, without tool calls or tool output. The sections below point to the session for each
+phase. `prompts/` holds only the runtime templates; it has no Cursor or Grok prompts.
 
 ## Standing instructions (every session)
 
@@ -23,25 +22,28 @@ repeated.
 
 ## Design, before code (2026-09-24 to 2026-09-25)
 
-Commits `d97ae3e` to `4cda904`: DESIGN.md, PLAN.md, CLAUDE.md, and the first EXPLAINER.md. The
-wording of the instructions that produced these was not preserved.
+Commits `d97ae3e` to `4cda904`: DESIGN.md, PLAN.md, CLAUDE.md, and the first EXPLAINER.md. Instructions:
+PROMPT_HISTORY.md, Session 1 (the opening planning prompt, then the request that produced
+EXPLAINER.md).
 
 ## Phases 0 to 4 (2026-09-25)
 
 Commits `a81b2d4` (Phases 0 to 2 core), `ef382e1` to `29de772` (Phase 0 account spikes), `4777c7a`
-(schema fallback), `8adc791` (Phase 3), `db786c8` to `2597b89` (Phase 4). The exact wording of the
-instructions for these phases was not preserved. The general shape was "continue building
-Portcullis, phase N"; that is a description, not a quote.
+(schema fallback), `8adc791` (Phase 3), `db786c8` to `2597b89` (Phase 4). Instructions:
+PROMPT_HISTORY.md, Session 1 ("`/goal` please build the plan from the beginning to the end of phase
+2") and Session 2 (run the Phase 0 account spikes and deploy, then the schema flattening fallback
+and Phases 3 to 5).
 
 ## Phase 5 (2026-09-25)
 
 Recorded verbatim at the time:
 
-- *"once you are done with compacting, please continue towards your goal of finishing this
-  project till the end of phase 5"*. Drove Phase 5 (eval harness, four ablations, response cache),
+- *"once you are done with compacting, please continue towards your `/goal`  of finishing this
+  project till the end of phase 5"* (PROMPT_HISTORY.md, Session 2). Drove Phase 5 (eval harness, four ablations, response cache),
   commit `7847cb3`.
 - *"A pull request was just created for this branch from the Claude Code UI ... Reference this PR
-  going forward"* (the ellipsis is as it was recorded; the full text was not kept). Established
+  going forward"* (the ellipsis is as it was recorded in the earlier PROMPTS.md; this message is not in
+  PROMPT_HISTORY.md). Established
   PR #2 as the tracking pull request for the branch.
 
 ## Phases 6 and 7 (2026-09-26)
@@ -49,14 +51,15 @@ Recorded verbatim at the time:
 Recorded verbatim at the time:
 
 - *"go all the way and finish the project please. commit at every major step in the process like a
-  proper SWE and compact your context"*. Drove Phase 6 (`e0fe6b3`: failure injection, step timings,
+  proper swe and compact your context"* (PROMPT_HISTORY.md, Session 2). Drove Phase 6 (`e0fe6b3`: failure injection, step timings,
   structured logging) and Phase 7 (`7c31b41`, `d8a7b31`, `0ff4378`: README, PROMPTS.md, status
   docs).
 
 ## After Phase 7 (2026-09-27)
 
-The wording of the instructions for these sessions was not preserved. Their commits and write-ups
-are the record.
+Instructions: PROMPT_HISTORY.md, Sessions 3 to 5. Session 3 is the quota investigation and PR,
+Session 4 the independent review, the second block labeled Session 3 the review fixes, and
+Session 5 the diagnostics PR and the real-model fix.
 
 - **Quota handling PR** (PR #4): `a0cb0b5` never retry a quota error and track neurons per
   incident, `65be471` UI model status and neuron total, `495f4d5` eval harness `--scenarios`/`--runs`
@@ -72,6 +75,8 @@ are the record.
   [docs/reviews/2026-09-27-first-real-model-run.md](docs/reviews/2026-09-27-first-real-model-run.md).
 
 ## Documentation pass (2026-09-28)
+
+The full session is PROMPT_HISTORY.md, Session 6.
 
 This file, the README rewrite, DESIGN.md section 14, the "exhausted since Phase 0" corrections and
 the EXPLAINER.md update. The instruction, verbatim (the angle-bracket placeholder was left

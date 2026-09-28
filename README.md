@@ -203,3 +203,4 @@ Deployment: pushes to `main` deploy through Cloudflare Workers Builds. Manual de
 - [docs/spikes.md](docs/spikes.md): every measurement with date and conditions.
 - [PROMPTS.md](PROMPTS.md): how the coding assistant was directed, and the runtime prompt templates
   in [prompts/](prompts/).
+- [PROMPT_HISTORY.md](PROMPT_HISTORY.md): the full log of the Claude Code sessions, verbatim.
