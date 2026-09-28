@@ -76,14 +76,16 @@ build has a target.
 The percentages above were placeholders written before implementation. Measured since, on the
 simulator for the committed scenario and seed (docs/spikes.md): the naive rule blocks 62.3% of
 attack and **46.3% of legitimate** traffic. A precise hand-written rule blocks 100% and 0%. What the
-real model's rule achieves is measured (docs/spikes.md, 0.4), and it is a negative result against
-the original schema: 0/30 attempts produced valid JSON at all. The shipped fallback (flat,
-type-split leaf kinds, PLAN.md's 0.4 fallback list) has not been re-measured against the real
-model: the account's Workers AI daily neuron quota has been exhausted since, and still is
-(`docs/eval-results/README.md`). The demo with the fake model, including the hypothesis and
-report-and-lesson beats built in Phase 4, runs end to end locally today
-(`npx wrangler dev --local --var MODEL_MODE:fake`); it has not yet been driven against the deployed
-URL with a working real-model call.
+real model's rule achieves: against the original AST schema, 0/30 attempts produced valid JSON
+(docs/spikes.md, 0.4). The type-split fallback schema was measured on 2026-09-27 on the deployed
+site's first real investigation and also failed, 0/3 draft attempts
+(`docs/reviews/2026-09-27-first-real-model-run.md`), so production now asks for rule text
+(section 7, "Round-trip property"). The text route has not yet been measured against the real
+model. The account's daily neuron allocation was used up on 2026-09-25 by the Phase 0 spikes; it
+resets daily and was not exhausted on 2026-09-27 (docs/spikes.md, "investigating the Sep 25 neuron
+burst"). The demo with the fake model runs end to end locally
+(`npx wrangler dev --local --var MODEL_MODE:fake`); it has not yet been driven to an approved rule
+against the deployed URL with the real model.
 
 ## 4. Architecture
 
@@ -149,7 +151,9 @@ Cloudflare credentials.
 - Choose which breakdown dimensions to emphasize, selecting from a fixed enum. It does not choose
   *whether* they are computed; all of them always are.
 - Emit a hypothesis string that cites evidence IDs.
-- Emit a `RuleAST` as JSON, validated against a JSON Schema.
+- Emit a rule as Rules-language text inside a `{"rule": "..."}` JSON wrapper, validated against a
+  JSON Schema and then parsed by our parser (section 7, "Round-trip property"). Before 2026-09-27
+  it emitted a `RuleAST` as JSON.
 - Write the prose incident report and a one sentence lesson.
 
 ### What the LLM may not do
@@ -158,7 +162,8 @@ Cloudflare credentials.
 - See ground truth labels. Summaries are computed without the attack or legitimate label, so the
   model cannot learn the answer from its input.
 - Decide which tools run, or in what order. The Workflow sequence is fixed in code.
-- Produce rule *text* that anything consumes. It emits an AST; our printer produces the text.
+- Produce rule text that anything consumes directly. Its text is only ever input to our parser;
+  what is stored, shown and applied is our printer's canonical rendering of the parsed tree.
 - Produce any number that reaches the operator: no metrics, no confidence, no pass or fail.
 - Write to SQLite, approve anything, or apply anything.
 
@@ -217,7 +222,7 @@ Measured on the account (docs/spikes.md, 0.2): a single Durable Object RPC call 
 method did not trigger `exceededCpu` at up to 512,000,000 loop iterations, well beyond what a real
 chunk call does. No measurement forced a change away from RPC. This does not fully confirm the
 original question (whether RPC specifically gets its own refreshed budget, as opposed to the account
-simply not being CPU-limited at 10 ms on this call path) — see docs/spikes.md for the two
+simply not being CPU-limited at 10 ms on this call path); see docs/spikes.md for the two
 explanations left open. If `exceededCpu` appears in production logs, the Workflow's chunk loops
 switch to `fetch()` on the Agent stub instead; that is a change to `src/server/workflow.ts` only.
 
@@ -717,7 +722,7 @@ afterwards, from the printer's span map, since the rendered text only exists onc
 
 **Why text, not AST JSON.** The AST route (`RULE_JSON_SCHEMA`, `decodeModelOutput` in
 `src/core/rules/schema.ts`) is the original design and is still used by
-`src/eval/harness.ts`'s primary scenario runner, for comparison, and is still fully tested — it is
+`src/eval/harness.ts`'s primary scenario runner, for comparison, and is still fully tested. It is
 not deleted, only no longer what the production Workflow calls. It failed on the site's first three
 real (non-fake, non-simulated) model calls: all three attempts ran out their 1,024-token completion
 budget emitting nothing but nested `and`/`or` connective nodes with doubling ids and never a single
@@ -937,9 +942,11 @@ require the Workers Paid plan. Measured on the account (docs/spikes.md, 0.1):
 placeholder or a threshold. The harness described above is built and has been run end to end
 against the fake model (`docs/eval-results/fake.json`), which validates the harness and the
 ablations mechanically but is not evaluation signal about the model: the fake model returns one
-fixed rule regardless of input. A real run (`npm run eval -- --real`) is blocked on the account's
-Workers AI daily neuron quota, exhausted as of this writing (docs/spikes.md, docs/eval-results/README.md).
-The README will carry measured numbers or state that none exist yet.
+fixed rule regardless of input. A real run (`npm run eval -- --real`) has not been made. The
+account's daily neuron allocation was used up on 2026-09-25 by the Phase 0 spikes and resets daily
+(docs/spikes.md, "investigating the Sep 25 neuron burst"); the only real-model data since is the
+deployed site's first investigation on 2026-09-27 (`docs/reviews/2026-09-27-first-real-model-run.md`).
+The README carries measured numbers or states that none exist yet.
 
 ## 10. Failure modes
 
@@ -977,11 +984,12 @@ model's context, for example by sending a user agent of
 
 Mitigations, in order of how much they actually help:
 
-1. **The model's output cannot do damage on its own.** It emits an AST against a schema. It cannot
-   emit a field that does not exist, an operator we did not define, or free text that gets executed.
-   A successful injection can make the rule *wrong*, and wrong rules are caught by the replay
-   evaluator and by the human. This structural containment is the primary defense and it is why the
-   AST decision matters for security and not only for reliability.
+1. **The model's output cannot do damage on its own.** Its rule text goes only to our parser and
+   type checker (section 7). A field that does not exist or an operator we did not define is a parse
+   or type error, and nothing the model writes is executed. A successful injection can make the rule
+   *wrong*, and wrong rules are caught by the replay evaluator and by the human. This structural
+   containment is the primary defense. It held under both the original AST JSON route and the
+   current text route, because in both the model's output reaches only validators and the parser.
 2. **Attacker-controlled strings are clearly delimited and labeled as untrusted data** in the
    prompt, never interpolated as if they were instructions. Every inserted value is JSON-encoded,
    and additionally `<` and `>` are escaped as `\u003c` and `\u003e`. Found during Phase 1 by a
@@ -1062,20 +1070,19 @@ Explicitly out of scope. Listed so that the absence of each is a decision rather
    (docs/spikes.md, 0.2): no single RPC call triggered `exceededCpu` up to 512,000,000 loop
    iterations. Kept RPC for the chunk loops; the deeper question of whether this account enforces
    the 10 ms budget at all on this call path stays open, see docs/spikes.md 0.2.
-3. **Structured output reliability for rule drafting. MEASURED and failing; fallback in progress**
+3. **Structured output reliability for rule drafting. MEASURED and failing; production moved to
+   rule text on 2026-09-27** (section 7, "Round-trip property"). History:
    (docs/spikes.md, 0.4). The original nested-`$ref` AST-as-JSON-Schema encoding: 0/30 attempts
    produced valid JSON, running away into an unboundedly deep nested `"or"` chain. Fallback 1
    (flatten the schema to a node list with integer id references, `RULE_JSON_SCHEMA` in
    `src/core/rules/schema.ts`) is implemented and was re-measured: still fails, 0/30 schema-valid,
    because the model just ran away in sibling count instead of depth, building a 64-node tree of
-   pure `and`/`or` with zero leaf conditions. Fallback 2 (split leaf kinds by value type —
-   `compareString`/`compareNumber`, `inStrings`/`inNumbers` — removing every union-typed field from
-   the schema) is implemented and unit-tested but **not yet re-measured against the account**: the
-   account's 10,000/day free neuron allocation was exhausted measuring fallback 1 and diagnosing the
-   failure mode. Re-run `node scripts/run-spikes.mjs <url> structured 10` once the allocation resets
-   and update docs/spikes.md before treating this as resolved. Until it is, the model-drafted-rule
-   step of the Phase 1 demo fails visibly rather than producing a rule, which is the designed
-   behavior for an unhandled model failure (section 10), just not the intended common case.
+   pure `and`/`or` with zero leaf conditions. Fallback 2 (split leaf kinds by value type:
+   `compareString`/`compareNumber`, `inStrings`/`inNumbers`, removing every union-typed field from
+   the schema) was implemented after the account's 10,000/day free neuron allocation was used up on
+   2026-09-25, and was first measured on 2026-09-27 on the deployed site: 0/3 attempts, same
+   connective explosion (`docs/reviews/2026-09-27-first-real-model-run.md`). The text route that
+   replaced it has not yet been measured against the real model.
 4. ~~Measured requests-per-10 ms~~. Closed: `CHUNK_SIZE = 500`, `requestCount = 6000`, measured
    locally (docs/spikes.md, 0.3). Re-check `exceededCpu` on the account.
 5. Grammar. Implemented as section 7 describes; Abhishek to review and own it.
@@ -1084,3 +1091,44 @@ Explicitly out of scope. Listed so that the absence of each is a decision rather
 7. ~~Nothing has been deployed~~. `spikes/` is deployed to `pragyna-portcullis.workers.dev`
    (docs/spikes.md). The main app (`portcullis`) deploy is tracked separately in PLAN.md's Phase 1
    status.
+
+## 14. Architecture invariants
+
+These are copied from `CLAUDE.md`, which carries them as standing instructions for the coding
+assistant. They live here so a reader of the design sees them without reading assistant
+instructions. Breaking one is a bug even if tests pass.
+
+1. **The approve call carries a rule version ID, never a rule.** The apply step re-reads that row
+   from SQLite and applies what is stored. If a client could submit the rule at approval time, it
+   could show the reviewer a narrow rule and apply a broad one, which would make human authorization
+   decorative. There are dedicated tests for this and they are never deleted or skipped.
+2. **Applying a rule requires an approval row to exist.** The apply step verifies this itself. It
+   does not trust that it was only reachable through the approval gate.
+3. **Model output reaches only the JSON Schema validator, then the type checker, then the parser.**
+   It never reaches SQL, `eval`, the filesystem, a fetch URL, or the UI as raw text. It is data under
+   suspicion until validated. (Since the move to rule text, the order is JSON Schema validator for
+   the `{"rule": ...}` wrapper, then the parser, then the type checker; see section 7.)
+4. **The model never sees raw requests and never sees ground truth labels.** It receives aggregated
+   summaries computed without the attack or legitimate label. If a new prompt needs traffic detail,
+   add a deterministic aggregation, do not widen what the model sees.
+5. **The model never produces a number the operator sees.** No metrics, no confidence, no pass or
+   fail. Every number is computed in code from the four replay counts.
+6. **The deterministic core imports nothing platform specific.** No `agents`, no
+   `cloudflare:workers`, no bindings in `src/core/`. It takes data and returns data.
+7. **The 10 ms CPU budget.** This targets Workers Free, where CPU per request is 10 ms everywhere:
+   Worker, Durable Object, and Workflow step. Any work that could exceed one slice goes through the
+   chunk driver. Never write a loop over all requests outside it.
+8. **Traffic is columnar and dictionary encoded.** No code path materializes an array of `Request`
+   objects except tests and the reference evaluator.
+9. **Traffic never crosses a Workflow step boundary.** Steps pass identifiers, digests, aggregates and
+   counts. Step returns and event payloads are capped at 1 MiB by the platform.
+10. **The Agent is name-addressed**, never addressed by raw Durable Object ID. Workflow callbacks
+    re-resolve it with `getAgentByName`, so a raw ID sends callbacks to a different instance.
+11. **The bundler preserves class names** (`keep_names: true`). The Workflow's originating path is
+    keyed by `constructor.name`, so minification silently breaks callbacks in production but not in
+    dev.
+12. **Workflow steps are deterministic.** Step names are constants or derived from a fixed loop bound.
+    No `Date.now()` or randomness in step names, outside steps, or in conditionals outside steps. The
+    simulator seed comes from `event.payload` or a prior step's output, never from the clock.
+13. **A printer and parser disagreement is a hard failure, never a retry.** It means our code is
+    wrong. Fail loudly.

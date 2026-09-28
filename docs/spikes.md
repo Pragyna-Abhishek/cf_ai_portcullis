@@ -5,7 +5,7 @@ Cite this file rather than restating a number from memory.
 
 **Target account tier:** Workers Free (as stated in PLAN.md). The account's actual billing tier
 could not be confirmed from the API token used here (`GET /accounts/:id/subscriptions` returned an
-authentication error, likely a token-scope limit, not a tier answer) — marked UNVERIFIED below where
+authentication error, likely a token-scope limit, not a tier answer). Marked UNVERIFIED below where
 it matters.
 
 **Where these were measured:** 0.1, 0.2 and 0.4 were run 2026-09-25 against the real account, via
@@ -18,7 +18,7 @@ unchanged, measured locally.
 | 0.1 Model usable on the account, and its rate limit | MEASURED on account, 2026-09-25 | Keep `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. No fallback needed |
 | 0.2 Does a Durable Object RPC call refresh the CPU budget | MEASURED on account, 2026-09-25 (partial, see below) | Keep RPC; no failure was found to force a change |
 | 0.3 How many requests fit in 10 ms | MEASURED locally, 2026-09-25 | `CHUNK_SIZE = 500`, `requestCount = 6000` |
-| 0.4 Structured output reliability | MEASURED on account, 2026-09-25 — **fails**; fallback 1 (flat schema) also measured, still fails; fallback 2 (type-split leaf kinds) implemented but NOT yet re-measured, account daily neuron quota exhausted | Flat, type-split node-list JSON Schema (`RULE_JSON_SCHEMA`), no `$ref` recursion and no union-typed fields. See below |
+| 0.4 Structured output reliability | MEASURED on account, 2026-09-25, **fails**; fallback 1 (flat schema) also measured, still fails; fallback 2 (type-split leaf kinds) measured 2026-09-27 on the deployed site, also fails (0/3, `docs/reviews/2026-09-27-first-real-model-run.md`); production moved to rule text | Flat, type-split node-list JSON Schema (`RULE_JSON_SCHEMA`), no `$ref` recursion and no union-typed fields. See below |
 
 ## 0.3 CPU per chunk
 
@@ -140,7 +140,7 @@ four calls at 60% of that ceiling back-to-back over RPC, `fetch()`, and WebSocke
 each transport gets a fresh budget.
 
 **No single RPC call failed, up to 512,000,000 loop iterations** (the ladder's cap). Because no
-ceiling was found, the second half of the experiment (the fetch/WebSocket comparison) did not run —
+ceiling was found, the second half of the experiment (the fetch/WebSocket comparison) did not run:
 there was no ceiling to compute 60% of. This is a genuine result, not a bug: every rung of the
 ladder, from 250,000 to 512,000,000 iterations, returned `ok: true`.
 
@@ -151,17 +151,17 @@ explanations are both consistent with the data and neither is confirmed:
 1. The account tier is not Workers Free CPU-limited at 10 ms (tier is UNVERIFIED here, see above).
 2. `Burner.burnRpc`'s CPU cost, even at 512M xorshift iterations, executes fast enough under V8's
    JIT to stay under 10 ms in the Durable Object's own accounting, and DO RPC calls are charged to
-   an isolate whose CPU accounting is separate from the calling Worker's — which would itself answer
+   an isolate whose CPU accounting is separate from the calling Worker's, which would itself answer
    the original question (RPC gets its own budget) but was not directly observed, only inferred.
 
 **Decision:** keep RPC for the Workflow's chunk loops, per the existing design. No measurement forced
-a change to `fetch()`. But the underlying assumption — that a chunked call this size fits under
-10 ms in production — is not proven by this spike; it rests on the local CPU-per-operation numbers
+a change to `fetch()`. But the underlying assumption (that a chunked call this size fits under
+10 ms in production) is not proven by this spike; it rests on the local CPU-per-operation numbers
 in 0.3 instead. If `exceededCpu` appears in Workers logs once the real app runs Workflow steps
 against real traffic chunks, revisit this and switch the transport per the plan already in DESIGN.md
 section 5.
 
-## 0.4 Structured output reliability (MEASURED — fails)
+## 0.4 Structured output reliability (MEASURED, fails)
 
 Measured 2026-09-25 against the deployed spike Worker. Command:
 `node scripts/run-spikes.mjs <url> structured 10`. Raw result:
@@ -190,7 +190,7 @@ than by sampling.
 | Other errors | 0/30 |
 | Passes replay thresholds | 0/30 |
 
-Every attempt returns `responseKind: "ok"` — Workers AI does not report a JSON-mode failure — but the
+Every attempt returns `responseKind: "ok"`. Workers AI does not report a JSON-mode failure, but the
 raw text is not parseable JSON. All 30 fail with the same diagnostic (`E_SCHEMA_NOT_JSON`), the same
 failure shape, and a similar wall time (26.0-35.7 s per call). This is fully reproducible: identical
 across all three scenario shapes and all ten seeds, not a rare or seed-dependent flake.
@@ -213,7 +213,7 @@ the parallel rule against skipping inconvenient findings.
 Replaced the nested `$ref` schema with a flat node list (`{"root": ID, "nodes": [{"id", "kind", ...},
 ...]}`), children referenced by integer id, capped at `maxItems: 64`. `src/core/rules/schema.ts`,
 `RULE_JSON_SCHEMA`; decoder rewritten to resolve ids with an explicit depth guard (`maxDepth`, still
-32) *and* a separate expansion-budget guard (`maxNodes`, 64) — a node referenced by two parents
+32) *and* a separate expansion-budget guard (`maxNodes`, 64): a node referenced by two parents
 expands at each reference, so depth alone does not bound total work; a small node list could still
 blow up combinatorially within the depth cap. `prompts/draft-rule.system.txt` and
 `draft-rule.user.txt` updated to describe the flat format. Full unit test coverage in
@@ -237,7 +237,7 @@ pathology, not an artifact of either encoding: without a recursion depth to run 
 instead ran away in sibling count, building out logical connectives it never resolved into an actual
 condition, until it exactly filled the array-length cap with nothing but `and`/`or`.
 
-### Fallback 2, splitting leaf kinds by value type: implemented, not yet re-measured (quota exhausted)
+### Fallback 2, splitting leaf kinds by value type: implemented; measured 2026-09-27, also fails
 
 Hypothesis: the leaf kinds' `value: ["string", "integer"]` union type is the reason the model avoids
 them. Workers AI's constrained JSON-mode decoder may handle a union-typed field poorly compared to
@@ -251,17 +251,16 @@ test). The internal `RuleAST` type is unchanged; `encodeRuleAst` picks the wire 
 literal's JS type, `decodeRuleAst` maps back. `prompts/` updated to match. Full unit coverage in
 `test/unit/rules/schema.test.ts`.
 
-**This has not been re-measured against the account.** Testing fallback 1 and probing the failure
-mode (including the `max_tokens: 4096` probe above) spent the account's entire 10,000/day free
-neuron allocation; the account started returning error `3036`/`4006` ("used up your daily free
-allocation") partway through verification. Per CLAUDE.md, this is reported as NOT MEASURED rather
-than assumed to work: the type-split schema is a reasoned, tested-at-the-decoder-level fix for a
-real measured pathology, not yet confirmed to change the model's behavior. **Re-run
-`node scripts/run-spikes.mjs <url> structured 10` once the daily allocation resets (or on a Paid
-account) and update this section with the result before treating 0.4 as resolved.** Until then,
-Phase 1's model-drafted rule step is expected to keep failing visibly on this account, which is the
-designed behavior for an unhandled model failure (DESIGN.md section 10), just not the intended common
-case.
+**Not measured on 2026-09-25.** Testing fallback 1 and probing the failure mode (including the
+`max_tokens: 4096` probe above) spent that day's 10,000 neuron free allocation; the account started
+returning error `3036`/`4006` ("used up your daily free allocation") partway through verification.
+
+**Measured 2026-09-27, on the deployed site's first real investigation: also fails.** All three
+draft attempts ran to the 1,024-token limit emitting only `and`/`or` nodes, `E_SCHEMA_NOT_JSON`,
+0/3. This was one investigation of three attempts, not a 30-attempt spike run. Full
+account: `docs/reviews/2026-09-27-first-real-model-run.md`. Production moved to asking for rule text
+instead of AST JSON (DESIGN.md section 7, "Round-trip property"). The text route is not yet
+measured against the real model.
 
 If the type split is also insufficient once re-measured, the next fallback in PLAN.md's ordered list
 is two-call decomposition (one call picks field/operator from enums, a second supplies only the
@@ -320,7 +319,7 @@ the daily allocation "has been exhausted since Phase 0." This section records wh
 2026-09-25, between 21:45 and 22:22 UTC:
 
 - `node scripts/run-spikes.mjs <url> structured 10`, run twice: once against the original nested
-  `$ref` schema (30 calls, each running to `max_tokens: 1024` before truncation, 0/30 valid — this is
+  `$ref` schema (30 calls, each running to `max_tokens: 1024` before truncation, 0/30 valid; this is
   the run recorded as spike 0.4's headline result), and once again after flattening the schema (spike
   0.4's "fallback 1"): 30 more attempts, but only 12 of those actually reached the model, because
   18/30 came back rate-limited from calls made in the same back-to-back run.
@@ -387,6 +386,12 @@ account's daily neuron quota "has been exhausted since Phase 0" or "is currently
 statements were accurate on 2026-09-25, the day they were written, but a Workers AI daily allocation
 resets daily; nothing in this repo's records shows anyone re-attempted a real-model call on any day
 since. The accurate statement is that the quota was exhausted on 2026-09-25 by the spikes above, and
-spike 0.4's fallback 2 (the type-split schema) has not been re-measured since — that is a "not yet
+spike 0.4's fallback 2 (the type-split schema) has not been re-measured since; that is a "not yet
 attempted again" situation, not a standing "still exhausted" one. Those documents have not been
 rewritten as part of this entry; this is a note that they are due for a pass, not a fix.
+
+**Update 2026-09-28.** The documentation pass has now been done: README.md, DESIGN.md, PLAN.md,
+PROMPTS.md and `docs/eval-results/README.md` state the dated fact (used up on 2026-09-25 by this
+burst, resets daily) instead of a standing "still exhausted". EXPLAINER.md was deleted rather than
+corrected. Fallback 2 was measured on 2026-09-27 by the deployed site's first real investigation
+and failed; see `docs/reviews/2026-09-27-first-real-model-run.md`.
