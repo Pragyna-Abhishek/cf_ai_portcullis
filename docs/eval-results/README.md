@@ -29,18 +29,20 @@ rule." Treat every number in `fake.json` as a harness self-test, not a measured 
 
 ## `real.json`
 
-Not present. The account's daily Workers AI free-tier neuron allocation (10,000/day) is
-exhausted as of this writing, confirmed by a direct probe of the deployed spikes Worker's
-`/model/probe` endpoint (`4006: you have used up your daily free allocation of 10,000 neurons`),
-consistent with the finding already recorded in `docs/spikes.md`.
+Not present. When this section was first written, on 2026-09-25, the account's daily Workers AI
+free-tier neuron allocation (10,000/day) was used up, confirmed by a direct probe of the deployed
+spikes Worker's `/model/probe` endpoint (`4006: you have used up your daily free allocation of
+10,000 neurons`). That was a single burst from the Phase 0 spikes. The allocation resets daily, and
+the dashboard showed 0 of 10,000 used on 2026-09-27 (`docs/spikes.md`, "investigating the Sep 25
+neuron burst"). `--real` has simply not been run since.
 
 The `--real` code path itself has been smoke-tested end to end against the live binding (it
-correctly reaches the model, receives the quota error, and — after a cache-poisoning bug was
-found and fixed — correctly declines to cache it). But no real-model metrics have been measured
-today, so none are reported here. Per `CLAUDE.md`, an unmeasured number is marked UNVERIFIED or
-left out rather than reported; this file is left out entirely until a real run is possible.
+correctly reaches the model, receives the quota error, and (after a cache-poisoning bug was
+found and fixed) correctly declines to cache it). But no real-model metrics have been measured
+by this harness, so none are reported here. Per `CLAUDE.md`, an unmeasured number is marked
+UNVERIFIED or left out rather than reported; this file is left out until a real run is made.
 
-To produce it once the quota resets:
+To produce it:
 
 ```
 npm run eval -- --real

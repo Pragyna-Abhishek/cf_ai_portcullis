@@ -4,14 +4,15 @@ This document explains what Portcullis is, why it is built the way it is, and ho
 once it exists. It starts from zero background and ends at the level of detail in `DESIGN.md`. You
 do not need to know anything about Cloudflare, web security, or TypeScript before you start.
 
-**Important, read this first: all seven phases of `PLAN.md` are now built, tested and deployed** to
-`https://portcullis.pragyna-portcullis.workers.dev`. The whole loop in this document (traffic,
-investigation, rule drafting, verification, replay, approval, apply, recovery), plus the retry
-loop, the evidence ledger, memory, the eval harness with its four ablations, and failure injection,
-all run and are covered by tests. The real model's rule quality is still unmeasured: the account's
-Workers AI free-tier neuron quota has been exhausted since Phase 0's spikes, so every number cited
-below comes from the fake model unless the text says otherwise. Every section below is now
-**(built)**; Part 9 gives the exact status and remaining caveats.
+**Where things stand, in short.** All seven phases of `PLAN.md` are built, tested and deployed to
+`https://portcullis.pragyna-portcullis.workers.dev`. The whole loop in this document runs and is
+covered by tests: traffic, investigation, rule drafting, verification, replay, approval, apply and
+recovery, plus the retry loop, evidence, memory, the eval harness and failure injection. The real
+AI model has been tried on the deployed site twice. The first time, it failed to produce any rule
+at all. After a fix, it produced a valid rule that was safe but blocked less than half of the
+attack. Part 9 explains both runs. If you only want the short version, read `README.md`; if you
+want the full technical detail, read `DESIGN.md`. This document sits in between and assumes no
+background.
 
 ## Table of contents
 
@@ -125,9 +126,9 @@ demo script in `DESIGN.md` section 3, slowed down and explained.
    attack" and expect that to be trusted. Every claim it makes is tied to a specific piece of
    evidence: a specific traffic breakdown that a person can click and inspect for themselves.
 
-5. **A rule is drafted, then checked, then measured.** The model proposes a rule. Code renders it
-   into readable rule syntax, re-parses that same text to make sure nothing got lost in translation,
-   and then replays the actual traffic through the rule to see what happens. The result is four
+5. **A rule is drafted, then checked, then measured.** The model proposes a rule, written out as
+   rule text. Our own code reads that text, checks it makes sense, writes it back out in a standard
+   form and reads it again to make sure nothing got lost in translation, and then replays the actual traffic through the rule to see what happens. The result is four
    plain numbers: how much attack traffic was blocked, how much legitimate traffic was blocked, out
    of how many of each.
 
@@ -159,7 +160,7 @@ sequenceDiagram
     Flow->>Model: classify + hypothesize
     Model-->>Flow: hypothesis (cites evidence)
     Flow->>Model: draft a rule
-    Model-->>Flow: rule as structured data
+    Model-->>Flow: rule text (in a small JSON wrapper)
     Flow->>Check: validate + replay rule
     Check-->>Flow: 4 counts (attack/legit x blocked/total)
     Flow->>Op: show rule + numbers, wait
@@ -214,8 +215,8 @@ in full in Part 6.
 
 This is simply Cloudflare's hosted way of calling a large language model (in this design,
 Llama 3.3, a 70-billion-parameter model) without having to run the model yourself. Portcullis asks
-it structured questions ("classify this symptom," "propose a rule matching this schema") and always
-asks for the answer back in a specific, checkable shape (more in Part 5).
+it structured questions ("classify this symptom," "propose a rule") and always asks for the answer
+back as a small JSON object of a fixed shape, which code checks before using it (more in Part 5).
 
 ### The deterministic core
 
@@ -257,7 +258,7 @@ what each one is for. Here they are, in plain English first:
 | `Request` | One simulated visit to the website: what page, from where, using what browser, and (for testing purposes only) whether it was really an attacker or a real user. |
 | `Scenario` | One canned "attack situation" the simulator can generate, such as "credential stuffing on the login page, sharing an IP network with real users." |
 | `TrafficSummary` | A compact statistical summary of a batch of traffic, the *only* form of traffic the AI model is ever allowed to see. |
-| `RuleAST` | A rule, represented as structured data rather than as text. This is what the model actually produces. ("AST" is explained below.) |
+| `RuleAST` | A rule, represented as structured data rather than as text. Our parser builds one from the model's rule text, and every later step works on it. ("AST" is explained below.) |
 | `Evidence` | A specific, saved, citable piece of proof ("here is the breakdown that supports this claim") that a hypothesis can point back to. |
 | `RuleVersion` | One attempt at drafting a rule, including whether it passed every check and, if so, what it measured. |
 | `Incident` | The top-level record of one investigation, start to finish: the symptom, the status, which rule was proposed, whether it was approved. |
@@ -305,8 +306,9 @@ summarized traffic, just like a human analyst would.
 
 ### The rule, as data instead of text
 
-This is the most important type in the whole project, because it's the direct expression of "the
-model emits data, not text" (explained fully in Part 7):
+This is the most important type in the whole project. It is how our code holds a rule once the rule
+has been read and checked (Part 7 explains why the model now writes text, and why that is still
+safe):
 
 ```ts
 export type RuleAST =
@@ -334,9 +336,9 @@ fields to expect. This is a very common pattern for "one of several kinds of thi
 own extra data attached to it," and it's exactly what a rule needs: an "and" needs two sub-rules; a
 "compare" needs a field, an operator, and a value.
 
-The model never produces the text `ip.src.asnum eq 12345`. It produces JSON matching this shape.
-The text form only exists because *our own code* renders it, for a human to read (Part 5 walks
-through this in full).
+The model writes rule text like `ip.src.asnum eq 12345`, but that text is never used as it is. Our
+parser turns it into this shape first, and the text you see in the UI is our own printer's
+rendering of that shape (Part 5 walks through this in full).
 
 ### Everything else, briefly
 
@@ -417,8 +419,10 @@ This is the sequence that turns what the model produces into something trustwort
 
 ```mermaid
 flowchart LR
-    A["Model emits<br/>RuleAST as JSON<br/>(checked against a schema)"] --> B["Our printer<br/>renders it to<br/>rule text"]
-    B --> C["Our parser<br/>reads that text<br/>back into an AST"]
+    A["Model writes<br/>{&quot;rule&quot;: &quot;RULE TEXT&quot;}<br/>(wrapper checked against a schema)"] --> B["Our parser<br/>reads the text<br/>into an AST"]
+    B --> T["Type checker<br/>does it make sense?"]
+    T --> P["Our printer<br/>writes the AST<br/>back out as text"]
+    P --> C["Our parser<br/>reads that text<br/>again"]
     C --> D{"Do the two ASTs<br/>match exactly?"}
     D -- "no: bug in our code" --> X["Hard failure.<br/>Never silently retried."]
     D -- "yes" --> E["Evaluator replays<br/>traffic through the rule"]
@@ -426,12 +430,11 @@ flowchart LR
 ```
 
 Notice the model only ever appears in the very first box. After that, everything is our own code.
-This matters for two reasons, both explained more in Part 7:
+Two things follow from that:
 
-1. **The model can't make a typo.** Since it never writes rule syntax by hand, it cannot produce a
-   misplaced quote mark or a missing parenthesis. Anything that goes wrong from here on is a
-   *meaning* problem (wrong field, wrong operator), not a *spelling* problem, and it's caught by the
-   type checker, not left to a human to puzzle over.
+1. **A model typo is caught, not trusted.** If the model writes a missing quote mark or a field name
+   that does not exist, the parser or the type checker rejects it with a specific error code, and
+   that error is sent back to the model for its next attempt (up to three attempts).
 2. **The "round-trip" check (box D) is a genuine correctness test on our own code, not the model's.**
    If our printer and our parser ever disagree about what a given AST means, that's *our* bug, and
    it's treated as a hard stop, never quietly retried as if the model had made a mistake.
@@ -443,12 +446,12 @@ file:
 
 | Box | Function | File |
 | --- | --- | --- |
-| Model emits `RuleAST` | schema handed to `response_format` | `src/core/rules/schema.ts` |
+| Model writes `{"rule": ...}` | `TEXT_RULE_JSON_SCHEMA`, handed to `response_format` | `src/core/narrative-schema.ts` |
 | Our printer renders text | `printRule` | `src/core/rules/printer.ts` |
 | Our parser reads it back | `parseRule` (via the lexer) | `src/core/rules/parser.ts`, `src/core/rules/lexer.ts` |
 | Type checker | `typecheckRule` | `src/core/rules/typecheck.ts` |
 | Do the two ASTs match? | `astEqual` | `src/core/rules/pipeline.ts` |
-| The whole round-trip, called once per draft attempt | `verifyModelDraft` / `verifyAst` / `checkRuleText` | `src/core/rules/pipeline.ts` |
+| The whole check, called once per draft attempt | `verifyModelDraftText` / `verifyAst` / `checkRuleText` | `src/core/rules/pipeline.ts` |
 | Evaluator replays traffic | `compileRule`, `matchMask`, `replayChunk` | `src/core/rules/evaluate.ts` |
 | The slow evaluator it is checked against | `referenceMatches`, `referenceReplay` | `src/core/rules/reference.ts` |
 | Every diagnostic code | `Diagnostic` union and its constructors | `src/core/rules/diagnostics.ts` |
@@ -461,7 +464,13 @@ in that table: lexer and parser first (syntax), then the type checker (meaning),
 ### A worked example, concretely
 
 Suppose the model decides the right rule is "block requests to `/login` from network 12345."
-It emits:
+It answers:
+
+```json
+{"rule": "http.request.uri.path eq \"/login\" and ip.src.asnum eq 12345"}
+```
+
+Our parser reads the text inside into an AST:
 
 ```json
 {
@@ -471,14 +480,9 @@ It emits:
 }
 ```
 
-Our printer turns that into the text shown earlier:
-
-```
-http.request.uri.path eq "/login" and ip.src.asnum eq 12345
-```
-
-Our parser reads that text back into an AST and compares it to the original; they should match
-exactly. Then the evaluator runs this rule against every simulated request and counts four things:
+The type checker confirms `/login` is text and `12345` is a number, as those fields require. Our
+printer writes the AST back out as text, our parser reads that again, and the two ASTs must match
+exactly. Then the evaluator runs the rule against every simulated request and counts four things:
 how many attack requests it correctly blocks, how many attack requests slip through, how many
 legitimate requests it wrongly blocks, and how many legitimate requests correctly pass through.
 
@@ -495,9 +499,9 @@ and real customers share network 12345, then:
 
 This is now measured, on the simulator's credential-stuffing trap scenario (`docs/spikes.md`): the
 naive rule (block the shared network alone) blocks 62.3% of the attack but also 46.3% of legitimate
-traffic; the fake model's rule blocks 100% of the attack and 0% of legitimate traffic. That second
-number is against the fake model, not the real one (see the caveat in the header and in Part 9);
-the comparison itself, naive rule versus model's rule shown side by side with real counts, is the
+traffic; a hand-written rule (the one the fake model always returns) blocks 100% of the attack and
+0% of legitimate traffic. That second rule was written by a person, not found by the real model
+(Part 9 has what the real model did); the comparison itself, naive rule versus model's rule shown side by side with real counts, is the
 actual point, and it is what the UI renders for every investigation.
 
 ---
@@ -535,7 +539,7 @@ flowchart TD
     S5["5. hypothesize<br/>model forms a theory, citing evidence"] --> S6
 
     subgraph retry["Bounded retry loop, up to 3 attempts"]
-        S6["6. draft-rule<br/>model emits a RuleAST"] --> S7
+        S6["6. draft-rule<br/>model writes rule text"] --> S7
         S7["7. validate-rule<br/>schema + type checks"] --> S8
         S8["8. replay-rule<br/>run it against traffic, get 4 counts"]
     end
@@ -639,30 +643,31 @@ milliseconds!) actually reached all the way up and shaped how the core data stru
 project is represented. That's what "the design looks like this because of a specific measured
 constraint" means in practice.
 
-### Story two: why the model outputs data, not text
+### Story two: the model's output is only ever input to our checks
 
-Part 5 already showed the pipeline: the model emits `RuleAST` as JSON, and our own code renders it
-into text; the model never writes rule syntax directly. This decision is defended on two separate
-grounds, and it's worth understanding both:
+The original design asked the model for the rule as structured data (a JSON version of the AST),
+never as text. The idea was that a model can't misspell a rule it never has to spell out. On the
+real model this failed badly. Given a JSON shape where "and" and "or" could contain more "and" and
+"or", the model kept writing "and"/"or" pieces over and over, never once writing an actual
+condition, until it ran out of room (1,024 tokens) and was cut off mid-answer. It did this on all 3
+attempts on the deployed site, and the same thing had shown up in the earliest tests
+(`docs/reviews/2026-09-27-first-real-model-run.md`).
 
-**The reliability argument.** If the model were asked to just write out rule text directly, it
-could make any of the ordinary mistakes anyone makes writing in a formal syntax: a missing
-parenthesis, a stray character, an operator that doesn't exist. Every one of those would need to be
-caught and reported back for a retry, and a decent share of the retry budget would get spent on
-pure spelling problems that have nothing to do with whether the underlying idea for the rule was any
-good. Asking for structured data with a fixed shape (matched against a formal schema) sidesteps that
-whole category of failure. The model still might get the *meaning* wrong (pick a field that doesn't
-make sense with a particular operator), but it can't misspell a rule it never had to spell out.
+So the design changed: the model now writes the rule as ordinary rule text, and our parser reads it.
+Text has no "empty" piece the model can repeat forever; every word is part of a field, an operator
+or a value. If the model makes a typo, the parser catches it and the model gets the error back for
+its next try. The next real run produced a valid rule on the first attempt
+(`docs/reviews/2026-09-28-first-text-route-run.md`).
+
+What did not change is the part that matters for safety:
 
 **The security argument.** This connects directly to Part 8's discussion of prompt injection. Traffic
 fields like the user-agent string are attacker-controlled: anyone sending requests to the site can
-put whatever text they want in that field, including text specifically crafted to try to manipulate
-the model's next output. Because the model's final answer is required to fit a strict, fixed schema
-(one of six specific shapes, with only known field names and operators allowed), there's no way for
-an attacker's injected text, however clever, to make the model directly emit something dangerous.
-The worst it can do is push the model toward proposing a *bad* rule, and a bad rule is exactly what
-the replay evaluator and the human review step exist to catch. The structure isn't just cleaner code;
-it's a real security boundary.
+put whatever text they want in that field, including text crafted to try to manipulate the model's
+output. But the model's answer is never run, never put into a database query, and never shown as
+if it were trusted. It goes only to a JSON check and then our parser and type checker, which accept
+only known fields and operators. The worst an attacker can do is push the model toward a *bad*
+rule, and a bad rule is exactly what the replay evaluator and the human review step exist to catch.
 
 ### The one invariant worth its own callout: approve carries an ID, never a rule
 
@@ -701,9 +706,9 @@ real attempt at **prompt injection**: trying to smuggle instructions to the mode
 supposed to be plain data.
 
 The primary defense, as explained in Part 7's security argument, is structural: even if an injection
-attempt partially works and nudges the model toward a bad decision, the model's *output* is
-constrained to a fixed schema that can't do anything dangerous on its own: it can, at absolute
-worst, propose a bad *rule*, and a bad rule gets caught by the replay evaluator's actual numbers, and
+attempt partially works and nudges the model toward a bad decision, the model's *output* only ever
+reaches our own checks and can't do anything dangerous on its own: it can, at absolute worst,
+propose a bad *rule*, and a bad rule gets caught by the replay evaluator's actual numbers, and
 ultimately by the human looking at those numbers. On top of that structural defense, `DESIGN.md`
 lists several more direct precautions: attacker-controlled text is clearly labeled as untrusted data
 in the prompt rather than blended in as if it were an instruction, values are length-capped and
@@ -728,40 +733,48 @@ precision matters more than narrative.
 
 | Phase | What it delivers | Status |
 | --- | --- | --- |
-| 0 | Spikes and measurements: is the model usable, does the CPU budget behave as expected, how much traffic fits in 10 ms | 0.1 to 0.3 measured on the account or locally. 0.4 (structured output reliability) measured **negative** on the first schema shape; the flat, type-split schema fallback is what ships. See `docs/spikes.md` |
+| 0 | Spikes and measurements: is the model usable, does the CPU budget behave as expected, how much traffic fits in 10 ms | 0.1 to 0.3 measured on the account or locally. 0.4 (asking for the rule as JSON) measured **negative**, and every schema fallback tried also failed; production now asks for rule text. See `docs/spikes.md` |
 | 1 | A thin end-to-end slice: one scenario, the full approve and apply loop | Built, tested, deployed |
 | 2 | The real, full parser and evaluator, thoroughly tested | Built and tested |
 | 3 | The bounded retry loop, with diagnostics fed back to the model | Built and tested |
 | 4 | More scenarios, a full evidence ledger, memory of past incidents | Built and tested |
-| 5 | An evaluation harness with ablation experiments | Built and tested against the fake model; `--real` implemented and smoke-tested, blocked on Workers AI quota. See `docs/eval-results/README.md` |
+| 5 | An evaluation harness with ablation experiments | Built and tested against the fake model. The real-model run (`--real`) is implemented but has not been run. See `docs/eval-results/README.md` |
 | 6 | Failure-injection tests and tracing | Built and tested |
 | 7 | UI polish, a real README, the prompt-history documentation | Built. This document, `README.md` and `PROMPTS.md` reflect it |
 
 Phase 1 was planned to use a deliberately tiny grammar first, with the full grammar in Phase 2.
 Since both were built together, the full grammar went in directly.
 
-What has actually been measured, in `docs/spikes.md`:
+What has actually been measured:
 
 - On the simulator's trap scenario, the naive rule (block the shared network) blocks 62.3% of the
-  attack and **46.3% of real customers' requests**. A precise rule that checks the login path and
-  the attack's user agents blocks 100% of the attack and none of the real traffic. That precise
-  rule was written by hand for the fake model; whether the real model finds something as good is
-  the main unmeasured question.
+  attack and **46.3% of real customers' requests**. A precise hand-written rule blocks 100% of the
+  attack and none of the real traffic (`docs/spikes.md`).
+- The real model on the deployed site, before the fix: 0 of 3 draft attempts produced a usable
+  rule (`docs/reviews/2026-09-27-first-real-model-run.md`).
+- The real model after the fix, one run on the Layer 7 flood trap scenario: a valid rule on the
+  first attempt that blocked 865 of 2,067 attack requests (41.8%) and 0 of 3,933 legitimate ones.
+  That misses the scenario's goal of at least 90% of the attack. The naive rule blocked 94.6% of
+  the attack but also 41.6% of real customers (`docs/reviews/2026-09-28-first-text-route-run.md`).
+  One run is not a success rate.
 - Generating the whole scenario in one call would take about 9 to 11 ms of CPU on a cold start, over
   the 10 ms budget, so it is split into chunks of 500 requests, each well under budget.
+- About the free-tier model allowance (10,000 "neurons" per day): the early measurements used it all
+  up in one burst on 2026-09-25. It resets every day; it has not been "exhausted since" then
+  (`docs/spikes.md`, "investigating the Sep 25 neuron burst").
 
 ### A map of the code
 
 | Path | What it is |
 | --- | --- |
 | `src/core/` | The deterministic core, plain TypeScript with no Cloudflare imports: simulator (`simulator.ts`), binary encoding (`codec.ts`), label-blind aggregation (`aggregator.ts`), the naive baseline (`baseline.ts`), replay numbers (`replay.ts`), prompt assembly (`prompt.ts`) |
-| `src/core/rules/` | The rules language: `lexer.ts`, `parser.ts`, `printer.ts`, `typecheck.ts`, `limits.ts`, `schema.ts` (the model output boundary), `evaluate.ts` (the fast evaluator), `reference.ts` (the slow one it is checked against), `pipeline.ts` (ties them together), `diagnostics.ts` (every error code) |
+| `src/core/rules/` | The rules language: `lexer.ts`, `parser.ts`, `printer.ts`, `typecheck.ts`, `limits.ts`, `schema.ts` (the old JSON rule format, still used by the eval harness), `evaluate.ts` (the fast evaluator), `reference.ts` (the slow one it is checked against), `pipeline.ts` (ties them together), `diagnostics.ts` (every error code) |
 | `src/model/` | The single interface every model call goes through, the Workers AI version, and the fake |
 | `src/server/` | The Cloudflare layer: `index.ts` (Worker entry), `agent.ts` (`IncidentAgent`), `workflow.ts` (`InvestigationWorkflow`), `store.ts` (SQLite) |
 | `ui/` | The React page |
 | `prompts/` | The prompt templates, as plain text files |
 | `src/eval/` | The eval harness and its response cache (Phase 5) |
-| `test/unit/`, `test/integration/` | 204 fast tests of the core, and 40 tests of the real Agent and Workflow running in Cloudflare's local runtime, including the Phase 6 failure-injection suite |
+| `test/unit/`, `test/integration/` | 232 fast tests of the core, and 50 tests of the real Agent and Workflow running in Cloudflare's local runtime, including the Phase 6 failure-injection suite |
 | `spikes/`, `scripts/` | Tools for the measurements that need a Cloudflare account, and the eval harness's CLI driver |
 
 ---

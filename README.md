@@ -1,166 +1,205 @@
 # Portcullis
 
-An attack-response agent for web traffic. An LLM proposes a mitigation rule, deterministic code
-verifies it, a human authorizes it.
+Portcullis is an attack-response agent for simulated web traffic. An operator describes a symptom
+("users are getting locked out"). An LLM reads label-blind traffic summaries and proposes one
+firewall rule. Deterministic code then parses the rule, type checks it, proves the printer and
+parser agree, and replays every request through it to count how much attack and how much legitimate
+traffic it blocks. A human approves a specific stored rule version by ID, and only that stored
+version is applied. The model proposes; code verifies and produces every number; a person decides.
 
-Submission for Cloudflare's optional software engineering assignment. Built on the Cloudflare Agents
-SDK, Workflows, Durable Objects and Workers AI.
+Built on Cloudflare Workers, the Agents SDK (Durable Objects), Workflows and Workers AI, on the
+Workers Free plan.
 
-**Status:** all seven phases of [PLAN.md](PLAN.md) are built and tested. Deployed at
-[`portcullis.pragyna-portcullis.workers.dev`](https://portcullis.pragyna-portcullis.workers.dev).
-The one thing not measured is how well the **real** model drafts a rule: the account's Workers AI
-free-tier neuron quota has been exhausted since Phase 0, so every rule-quality number below is
-measured against the fake model, and is labeled as such. See [Status](#status) and
-[docs/eval-results/README.md](docs/eval-results/README.md).
+New to the project? [EXPLAINER.md](EXPLAINER.md) is a beginner-friendly walkthrough that assumes no
+background in Cloudflare, web security or TypeScript, and shows where to start reading the code.
 
-## What it does
+## Live demo
 
-A seeded simulator produces web traffic with a credential stuffing attack hidden in it. The attack
-shares its network (ASN) with a mobile carrier that nearly half the real customers use. That is the
-trap: the obvious rule, "block that network," blocks the customers too. Seven more scenarios across
-two more attack families (scraping, L7 flood), three of them traps with different shared
-attributes, exercise the same question from different angles.
+<https://portcullis.pragyna-portcullis.workers.dev>
 
-1. The operator types a symptom ("users are getting locked out").
-2. A durable Workflow aggregates the traffic in code into label-blind summaries, classifies the
-   symptom, and loads any lesson learned from a past incident in the same scenario family.
-3. The model forms a hypothesis citing evidence IDs from the aggregation, then proposes a rule, as
-   a JSON syntax tree, never as text.
-4. Our own printer turns the tree into Rules language text, our own parser reads it back, and the
-   two trees must be identical. A type checker validates fields and literals. A schema or type
-   failure feeds its diagnostics back into the next attempt, up to three attempts.
-5. Our evaluator replays every request through the rule and counts four numbers: attack total,
-   attack blocked, legitimate total, legitimate blocked. A naive single-attribute rule is replayed
-   beside it for comparison.
-6. The Workflow parks on a durable approval gate. The operator approves a specific stored rule
-   version, by ID, never by resubmitting the rule text.
-7. The rule is re-read from storage, applied, re-parsed from its stored text and replayed again to
-   verify recovery. The model writes a closing report and a one-sentence lesson, retrievable by the
-   next investigation in the same family.
+1. Wait for the traffic panel to fill (the credential-stuffing trap scenario).
+2. Type a symptom and press **Investigate**. The step list on the right updates live.
+3. When a rule is proposed, compare it with the naive baseline shown beside it, then press
+   **Approve this exact rule**. Traffic recovers.
+4. Reload the page. The incident is still there, because state lives in the Durable Object.
 
-Every number the operator sees comes from code. The model produces none of them (CLAUDE.md
-invariant 5), never sees which requests are attacks (invariant 4), and its output never reaches
-anything but the JSON Schema validator, the type checker and the parser (invariant 3).
+The deployed site calls the real model. In the one recorded post-fix run it produced a valid rule
+on the first attempt that failed the scenario's thresholds; the UI shows that verdict beside the
+numbers (see [Real-model results](#real-model-results)). Approval on the deployed site has not been
+recorded. The full flow, including approve and recovery, has been driven end to end locally
+against the fake model.
 
-## Measured so far
+## Architecture
 
-On the simulator's credential-stuffing trap scenario, seed fixed, deterministic (see
-[docs/spikes.md](docs/spikes.md)):
+```
+Browser (React UI)
+   |  WebSocket: state sync + @callable RPC
+   v
+Worker entry (routeAgentRequest)
+   v
+IncidentAgent (Durable Object + SQLite) ---- deterministic core (src/core, no platform imports)
+   |  runWorkflow / approve / reject              simulator, aggregator, rules language,
+   v                                              evaluator, replay math
+InvestigationWorkflow (durable steps) ------> Workers AI (llama-3.3-70b-instruct-fp8-fast)
+   |  waits on approval gate
+```
+
+- **Worker**: serves the UI as static assets and routes `/agents/*` to the Agent.
+- **Agent / Durable Object** (`IncidentAgent`): owns all state in SQLite (incidents, rule
+  versions, evidence, traffic chunks, lessons) and exposes `startInvestigation`, `approve`,
+  `reject`.
+- **Workflow** (`InvestigationWorkflow`): the fixed investigation sequence as durable, retryable
+  steps, parked on a durable approval gate until a human decides.
+- **Workers AI**: classifies the symptom, forms a hypothesis citing evidence IDs, drafts the rule,
+  writes the closing report. Nothing it returns reaches anything but a JSON Schema validator and
+  our parser.
+- **Rules language**: our own lexer, parser, type checker, printer and columnar evaluator for a
+  subset of Cloudflare's Rules language. Every draft must round-trip printer to parser exactly.
+- **Simulator**: seeded, deterministic traffic across 8 scenarios in 3 attack families, 5 of them
+  traps where the obvious rule also blocks real customers.
+
+Design, data model, grammar, security model and the 13 architecture invariants:
+[DESIGN.md](DESIGN.md) (invariants in section 14).
+
+## Real-model results
+
+**Sample size: two investigations on the deployed site, one before the fix and one after.** No
+rate can be drawn from this. Write-ups:
+[2026-09-27-first-real-model-run.md](docs/reviews/2026-09-27-first-real-model-run.md) and
+[2026-09-28-first-text-route-run.md](docs/reviews/2026-09-28-first-text-route-run.md).
+
+**First run: failed.** All 3 draft attempts were rejected as `E_SCHEMA_NOT_JSON`. The model was
+then asked for the rule as a JSON syntax tree (a flat node list).
+
+**Diagnosis.** A change merged the same day records, per attempt, completion tokens, the token
+limit, and a head and tail excerpt of the raw output. All three attempts showed
+`completionTokens: 1024` of `maxTokens: 1024`: cut off at the limit. The excerpts contained only
+`and`/`or` nodes with doubling IDs and not one leaf condition. The model spent its whole budget
+expanding connectives. This is the same pathology Phase 0's spike 0.4 measured on 2026-09-25 (0/30
+valid JSON against the original schema), so the schema fallbacks tried since did not remove it.
+
+**Fix adopted.** The model now returns `{"rule": "RULE TEXT"}`, and the rule text goes through the
+same parser, type checker and round-trip check as a rule typed by the operator. Text has no
+content-free node to repeat, and a truncated rule becomes an ordinary parse error fed back to the
+next attempt. Validation was not loosened.
+
+**After the fix: one investigation, one draft attempt, valid on the first try.** Scenario
+`l7-trap-carrier` (Layer 7 flood sharing a carrier ASN with real users; pass needs at least 90%
+attack blocked and at most 3% legitimate blocked). Numbers transcribed from screenshots of the
+deployed UI:
+
+| Rule | Attack blocked | Legitimate blocked | Thresholds |
+| --- | --- | --- | --- |
+| Model: `http.request.uri.path eq "/" and lower(http.user_agent) contains "okhttp"` | 865 of 2067 (41.8%) | 0 of 3933 (0.0%) | Fails |
+| Naive baseline: `ip.src.asnum eq 64500` | 1955 of 2067 (94.6%) | 1636 of 3933 (41.6%) | Fails |
+
+The model avoided the trap and blocked no customers, but caught under half the attack. The rule
+also has the same shape as the one example in the prompt; whether that biased it cannot be told
+from one run.
+
+**Separability check** (simulator, credential-stuffing trap scenario, fixed seed; exact and
+deterministic, pinned by `test/unit/scenario.test.ts`):
 
 | Rule | Attack blocked | Legitimate blocked |
 | --- | --- | --- |
 | Naive baseline, `ip.src.asnum eq 64500` | 62.3% (1061 of 1704) | 46.3% (1987 of 4296) |
-| The fake model's canned rule | 100% (1704 of 1704) | 0% (0 of 4296) |
+| Hand-written rule (the fake model's canned answer) | 100% (1704 of 1704) | 0% (0 of 4296) |
 
-**What the real model proposes is still not measured.** `npm run eval -- --real` runs the same
-comparison against Workers AI; it is implemented and smoke-tested end to end (it reaches the model
-and correctly declines to cache a quota-error response), but the account's daily neuron allocation
-has been exhausted since Phase 0's spike 0.4, so it has not produced a result. Every other number in
-`docs/eval-results/fake.json` is a harness self-test against the fake model, not evidence about real
-model quality; see [docs/eval-results/README.md](docs/eval-results/README.md) for exactly what that
-file does and does not show.
+The second row shows the scenario can be separated precisely. It says nothing about what the real
+model proposes.
 
-CPU cost per 500-request chunk, measured in Node on the development machine, not on Cloudflare:
-at most about 5.5 ms cold for generate, encode and aggregate together. That sets the chunk size under
-the Workers Free 10 ms CPU limit. Full tables in [docs/spikes.md](docs/spikes.md).
+## Harness self-tests (fake model)
 
-## Run it locally
+`npm run eval` runs all 8 scenarios and four ablations against a fake model that returns one fixed
+rule regardless of input. The results in
+[docs/eval-results/fake.json](docs/eval-results/fake.json) (for example 8/8 schema-valid, and the
+naive baseline failing its thresholds on 5 of 5 trap scenarios) show that the harness, retry loop,
+ablations and reporting run correctly. **They are not evidence of model quality.** See
+[docs/eval-results/README.md](docs/eval-results/README.md).
 
-Needs Node 22. No Cloudflare account needed: local mode uses a fake model that returns a fixed rule,
-and the UI labels it "fake".
+## Verification
+
+Independent review sessions were run against the work and written up in
+[docs/reviews/](docs/reviews/):
+
+- [2026-09-26-quota-pr.md](docs/reviews/2026-09-26-quota-pr.md): a review of the quota-handling
+  change found four issues. The "never retried" test mocked away the code it claimed to test; the
+  quota flag never cleared at the daily reset; `modelStatus`/`recordModelOutcome` had no tests;
+  a comment cited an error code the docs do not list. Writing the new tests also found a fifth bug
+  (state not refreshed after recording an outcome).
+- [2026-09-27-first-real-model-run.md](docs/reviews/2026-09-27-first-real-model-run.md): the
+  diagnosis and fix above.
+
+Fixes were checked by mutation: the fix was reverted, the new test was shown to fail, and the fix
+was restored. For example, removing the non-retry wrapping made the quota test fail with
+`expected 3 to be 1`, and removing the UTC-day check made the reset test fail with
+`expected 'quota-exhausted' to be 'live'`.
+
+## Free-plan operation
+
+- Workers AI on the Free plan allows 10,000 neurons per day; the allocation resets daily
+  ([docs/spikes.md](docs/spikes.md), spike 0.1).
+- On 2026-09-25 the Phase 0 spikes used it up in one burst: about 42 near-max-length structured
+  calls, 400 small rate probes and one 4,096-token diagnostic call. The Cloudflare dashboard showed
+  15.52k neurons over that period and 0 of 10,000 used on 2026-09-27
+  ([docs/spikes.md](docs/spikes.md), "investigating the Sep 25 neuron burst").
+- Each incident shows a running neuron total, computed in code from each response's token usage
+  and the model's published per-token rate. The post-fix run read 124 neurons after classify,
+  hypothesize and one draft (before the report step). That is one run, and it has not been compared
+  against the dashboard.
+- Quota errors (`3036`, and `4006` as observed on this account) are never retried at any level.
+  The investigation fails at once with a clear reason, the UI shows "quota exhausted" until a
+  successful call or the next UTC day, and the eval harness stops and keeps its cache. Rate-limit
+  errors (`429`, `3040`) are retried with backoff. PR preview deploys use the fake model so they
+  spend no neurons (`wrangler.jsonc`).
+
+## Run locally, test, deploy
+
+Needs Node 22. No Cloudflare account needed; local mode uses the fake model and the UI labels it.
 
 ```sh
 npm install
-npm run build                                          # builds the React UI into dist/client
-npx wrangler dev --local --var MODEL_MODE:fake         # http://localhost:8787
+npm run build
+npx wrangler dev --local --var MODEL_MODE:fake   # http://localhost:8787
 ```
-
-Open the page, wait for the traffic panel to fill, press **Investigate**, then **Approve this
-exact rule**. Reload the page: the incident is still there, because state lives in the Durable
-Object. The step list on the right shows every step's status, how long it took, and what it found;
-the naive baseline is shown beside the model's proposal for comparison.
-
-To use the real model instead, log in with `npx wrangler login` and run `npx wrangler dev` without
-`--local` and without the `MODEL_MODE` override. The AI binding always runs remotely and spends
-Workers AI neurons.
-
-## Live demo
-
-[`https://portcullis.pragyna-portcullis.workers.dev`](https://portcullis.pragyna-portcullis.workers.dev)
-is deployed with `MODEL_MODE=workers-ai` (`wrangler.jsonc`), calling the real model. For the same
-reason the eval harness's `--real` run has no output, this account's Workers AI daily neuron quota
-is currently exhausted, so **Investigate** on the deployed URL is expected to fail visibly at the
-draft-rule step until the quota resets (PLAN.md's Phase 1 status notes this too). The 60 second
-demo script in [DESIGN.md section 3](DESIGN.md#3-demo-script-60-seconds) has been driven end to end
-against `wrangler dev --local --var MODEL_MODE:fake`, not yet against the deployed URL with a
-working model call.
-
-## Tests
 
 ```sh
 npm run typecheck
-npm run test:unit          # 204 tests, plain Vitest in Node: the whole deterministic core
-npm run test:integration   # 40 tests in workerd via @cloudflare/vitest-plugin, fake model
+npm run test:unit          # 232 tests, plain Vitest: the deterministic core
+npm run test:integration   # 50 tests in workerd via @cloudflare/vitest-plugin, fake model
 npm run coverage           # Istanbul coverage for src/core
-npm run bench              # CPU benchmarks (Phase 0.3)
-npm run eval               # the eval harness: all 8 scenarios, all four ablations, fake model
+npm run bench              # CPU benchmarks
+npm run eval               # eval harness, fake model; add -- --real for Workers AI
 ```
 
-Highlights:
+Test highlights: 1,000 generated rules round-trip through printer and parser; the columnar
+evaluator agrees request by request with an independent naive evaluator; approving any rule version
+other than the one shown is refused, and applying without an approval row is refused; every
+Workflow step is forced to fail and must end in a defined `failed` state.
 
-- 1,000 generated rule trees round-trip through printer and parser.
-- The columnar evaluator agrees request by request with an independent naive evaluator on
-  generated rules and traffic.
-- Every diagnostic code is produced by at least one test.
-- Security tests: approving any rule version other than the one shown is refused; applying without
-  an approval row is refused even when the approval gate is forced open. These never get deleted or
-  skipped (CLAUDE.md).
-- A hypothesis citing a fabricated evidence ID is caught and never rendered.
-- `test/integration/failure-injection.test.ts`: every step in DESIGN.md section 8 forced to error
-  (one also forced to time out) ends the incident in a defined `failed` state, never a silent hang.
-- `DESIGN.md` section 6 must match `src/core/types.ts` byte for byte.
-- `test/unit/boundaries.test.ts` enforces CLAUDE.md invariant 6: nothing under `src/core/` imports
-  anything platform specific.
+Deployment: pushes to `main` deploy through Cloudflare Workers Builds. Manual deploy:
+`npx wrangler login && npm run deploy`.
 
-## Deploy
+## Known limitations
 
-```sh
-npx wrangler login
-npm run deploy
-```
+- **Real-model evidence is two runs.** Before the fix, 0 of 3 drafts valid. After it, one valid
+  rule that failed its scenario's attack threshold. No rate, and no run through approval on the
+  deployed site.
+- **No authentication.** Anyone with the URL can approve. "A human authorizes" means whoever holds
+  the link (DESIGN.md sections 11 and 12).
+- **Simulated traffic only.** Rules apply to the simulator, never to a real zone.
+- **CPU numbers are from Node on a development machine**, not Cloudflare hardware. The on-account
+  spike found no 10 ms CPU ceiling at all, which leaves open whether it is enforced on that path
+  ([docs/spikes.md](docs/spikes.md), 0.2).
+- **The eval harness still measures the old AST route as its primary flow**, with the text route
+  as an ablation (PLAN.md, deviations).
+- **Account tier is UNVERIFIED** from the API; Workers Free is the stated target.
+- **Grammar is a small subset** of Cloudflare's Rules language (DESIGN.md section 7).
 
-Deployed to `https://portcullis.pragyna-portcullis.workers.dev` on the Workers Free plan.
+## More
 
-## Layout
-
-| Path | What it is |
-| --- | --- |
-| `src/core/` | The deterministic core. Pure TypeScript, no platform imports. Simulator, codec, aggregator, rules language (lexer, parser, printer, type checker, evaluator), replay math, citations, scenario registry |
-| `src/model/` | The one `ModelClient` interface, its Workers AI implementation and a fake |
-| `src/server/` | The Cloudflare shell: Worker entry, `IncidentAgent` (Durable Object), `InvestigationWorkflow`, structured logging |
-| `src/eval/` | The Phase 5 eval harness and its response cache, reused directly from production code, not a reimplementation |
-| `ui/` | React UI, served as static assets |
-| `prompts/` | Prompt templates, as files |
-| `spikes/`, `scripts/` | Phase 0 spike Worker, the eval harness's CLI driver, and the account measurements |
-| `test/unit`, `test/integration`, `test/bench` | Tests, by kind |
-| `DESIGN.md` | Architecture and the source of truth |
-| `PLAN.md` | Build phases and their status |
-| `EXPLAINER.md` | The whole project explained from zero background |
-| `PROMPTS.md` | The AI prompt history: how the coding assistant was directed, and how the runtime prompts in `prompts/` reached their current shape |
-| `docs/spikes.md` | Every Phase 0 measurement, with date and conditions |
-| `docs/eval-results/` | Phase 5's committed eval report and what it does and does not show |
-
-## Status
-
-| Phase | State |
-| --- | --- |
-| 0. Spikes and measurements | 0.1 to 0.3 measured on the account or locally. 0.4 (structured output) measured negative on the original schema; the flat, type-split fallback schema ships and is what every later phase uses |
-| 1. Thin end-to-end slice | Built, tested, deployed |
-| 2. Real parser and evaluator | Built and tested |
-| 3. Retry loop and diagnostics feedback | Built and tested |
-| 4. Scenarios, evidence ledger, memory | Built and tested: 8 scenarios across 3 families, 3 traps |
-| 5. Eval harness and ablations | Built and tested against the fake model; `--real` implemented and smoke-tested, not measured (quota) |
-| 6. Failure injection and tracing | Built and tested: every step forced to fail, step timings, structured logging |
-| 7. UI polish, README, PROMPTS | This document, `PROMPTS.md`, and the UI's step timings, attempt history, evidence drill-down and naive-vs-proposed comparison |
-
-Open items are listed at the end of [DESIGN.md](DESIGN.md#13-open-items).
+- [EXPLAINER.md](EXPLAINER.md): the whole project explained from zero background.
+- [DESIGN.md](DESIGN.md): architecture and source of truth. [PLAN.md](PLAN.md): phases and status.
+- [docs/spikes.md](docs/spikes.md): every measurement with date and conditions.
+- [PROMPTS.md](PROMPTS.md): how the coding assistant was directed, and the runtime prompt templates
+  in [prompts/](prompts/).
