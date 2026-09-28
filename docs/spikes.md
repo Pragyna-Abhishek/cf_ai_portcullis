@@ -392,6 +392,6 @@ rewritten as part of this entry; this is a note that they are due for a pass, no
 
 **Update 2026-09-28.** The documentation pass has now been done: README.md, DESIGN.md, PLAN.md,
 PROMPTS.md and `docs/eval-results/README.md` state the dated fact (used up on 2026-09-25 by this
-burst, resets daily) instead of a standing "still exhausted". EXPLAINER.md was deleted rather than
-corrected. Fallback 2 was measured on 2026-09-27 by the deployed site's first real investigation
+burst, resets daily) instead of a standing "still exhausted". EXPLAINER.md was
+corrected too. Fallback 2 was measured on 2026-09-27 by the deployed site's first real investigation
 and failed; see `docs/reviews/2026-09-27-first-real-model-run.md`.

@@ -10,6 +10,9 @@ version is applied. The model proposes; code verifies and produces every number;
 Built on Cloudflare Workers, the Agents SDK (Durable Objects), Workflows and Workers AI, on the
 Workers Free plan.
 
+New to the project? [EXPLAINER.md](EXPLAINER.md) is a beginner-friendly walkthrough that assumes no
+background in Cloudflare, web security or TypeScript, and shows where to start reading the code.
+
 ## Live demo
 
 <https://portcullis.pragyna-portcullis.workers.dev>
@@ -195,6 +198,7 @@ Deployment: pushes to `main` deploy through Cloudflare Workers Builds. Manual de
 
 ## More
 
+- [EXPLAINER.md](EXPLAINER.md): the whole project explained from zero background.
 - [DESIGN.md](DESIGN.md): architecture and source of truth. [PLAN.md](PLAN.md): phases and status.
 - [docs/spikes.md](docs/spikes.md): every measurement with date and conditions.
 - [PROMPTS.md](PROMPTS.md): how the coding assistant was directed, and the runtime prompt templates

@@ -74,7 +74,7 @@ are the record.
 ## Documentation pass (2026-09-28)
 
 This file, the README rewrite, DESIGN.md section 14, the "exhausted since Phase 0" corrections and
-the removal of EXPLAINER.md. The instruction, verbatim (the angle-bracket placeholder was left
+the EXPLAINER.md update. The instruction, verbatim (the angle-bracket placeholder was left
 unfilled in the original):
 
 > Read CLAUDE.md, DESIGN.md, PLAN.md, and everything in docs/ first. This is the final documentation pass before I submit this repo. Do not change any code.
@@ -101,6 +101,10 @@ unfilled in the original):
 A follow-up message in the same session supplied three screenshots of a post-fix investigation on
 the deployed site, with the text: *"sorry, is this enough?"*. They are transcribed in
 [docs/reviews/2026-09-28-first-text-route-run.md](docs/reviews/2026-09-28-first-text-route-run.md).
+
+A second follow-up, verbatim:
+
+> about about EXPLAINER.md, please bring it back and update it for this documentation, it is there to introduce someone to this codebase (someone who has no idea where to even begin or what it is about). Mention in README that EXPLAINER gives a very beginner-friendly, easy-to-understand explanation
 
 ## Runtime prompt templates, verbatim from prompts/
 
