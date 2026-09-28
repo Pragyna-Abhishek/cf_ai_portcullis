@@ -20,10 +20,11 @@ Workers Free plan.
    **Approve this exact rule**. Traffic recovers.
 4. Reload the page. The incident is still there, because state lives in the Durable Object.
 
-The deployed site calls the real model. As of this writing the real model has not yet produced an
-approved rule on the deployed site (see [Real-model results](#real-model-results)), so step 3 may
-end in a visible `failed` state with the attempt history shown. The full flow has been driven end
-to end locally against the fake model.
+The deployed site calls the real model. In the one recorded post-fix run it produced a valid rule
+on the first attempt that failed the scenario's thresholds; the UI shows that verdict beside the
+numbers (see [Real-model results](#real-model-results)). Approval on the deployed site has not been
+recorded. The full flow, including approve and recovery, has been driven end to end locally
+against the fake model.
 
 ## Architecture
 
@@ -59,8 +60,10 @@ Design, data model, grammar, security model and the 13 architecture invariants:
 
 ## Real-model results
 
-**Sample size: one investigation on the deployed site, 2026-09-27, three draft attempts.** Full
-write-up: [docs/reviews/2026-09-27-first-real-model-run.md](docs/reviews/2026-09-27-first-real-model-run.md).
+**Sample size: two investigations on the deployed site, one before the fix and one after.** No
+rate can be drawn from this. Write-ups:
+[2026-09-27-first-real-model-run.md](docs/reviews/2026-09-27-first-real-model-run.md) and
+[2026-09-28-first-text-route-run.md](docs/reviews/2026-09-28-first-text-route-run.md).
 
 **First run: failed.** All 3 draft attempts were rejected as `E_SCHEMA_NOT_JSON`. The model was
 then asked for the rule as a JSON syntax tree (a flat node list).
@@ -77,10 +80,21 @@ same parser, type checker and round-trip check as a rule typed by the operator. 
 content-free node to repeat, and a truncated rule becomes an ordinary parse error fed back to the
 next attempt. Validation was not loosened.
 
-**Results after the fix: none yet.** The text route has not been run against the real model. No
-number is reported for it.
+**After the fix: one investigation, one draft attempt, valid on the first try.** Scenario
+`l7-trap-carrier` (Layer 7 flood sharing a carrier ASN with real users; pass needs at least 90%
+attack blocked and at most 3% legitimate blocked). Numbers transcribed from screenshots of the
+deployed UI:
 
-**Naive baseline comparison** (simulator, credential-stuffing trap scenario, fixed seed; exact and
+| Rule | Attack blocked | Legitimate blocked | Thresholds |
+| --- | --- | --- | --- |
+| Model: `http.request.uri.path eq "/" and lower(http.user_agent) contains "okhttp"` | 865 of 2067 (41.8%) | 0 of 3933 (0.0%) | Fails |
+| Naive baseline: `ip.src.asnum eq 64500` | 1955 of 2067 (94.6%) | 1636 of 3933 (41.6%) | Fails |
+
+The model avoided the trap and blocked no customers, but caught under half the attack. The rule
+also has the same shape as the one example in the prompt; whether that biased it cannot be told
+from one run.
+
+**Separability check** (simulator, credential-stuffing trap scenario, fixed seed; exact and
 deterministic, pinned by `test/unit/scenario.test.ts`):
 
 | Rule | Attack blocked | Legitimate blocked |
@@ -127,8 +141,9 @@ was restored. For example, removing the non-retry wrapping made the quota test f
   15.52k neurons over that period and 0 of 10,000 used on 2026-09-27
   ([docs/spikes.md](docs/spikes.md), "investigating the Sep 25 neuron burst").
 - Each incident shows a running neuron total, computed in code from each response's token usage
-  and the model's published per-token rate. A measured per-investigation figure has not been
-  recorded in this repository, and neither has a comparison against the dashboard.
+  and the model's published per-token rate. The post-fix run read 124 neurons after classify,
+  hypothesize and one draft (before the report step). That is one run, and it has not been compared
+  against the dashboard.
 - Quota errors (`3036`, and `4006` as observed on this account) are never retried at any level.
   The investigation fails at once with a clear reason, the UI shows "quota exhausted" until a
   successful call or the next UTC day, and the eval harness stops and keeps its cache. Rate-limit
@@ -164,8 +179,9 @@ Deployment: pushes to `main` deploy through Cloudflare Workers Builds. Manual de
 
 ## Known limitations
 
-- **The real model has not yet produced a verified rule.** One real investigation, 0 of 3 drafts
-  valid, on a route since replaced. The replacement is untested against the real model.
+- **Real-model evidence is two runs.** Before the fix, 0 of 3 drafts valid. After it, one valid
+  rule that failed its scenario's attack threshold. No rate, and no run through approval on the
+  deployed site.
 - **No authentication.** Anyone with the URL can approve. "A human authorizes" means whoever holds
   the link (DESIGN.md sections 11 and 12).
 - **Simulated traffic only.** Rules apply to the simulator, never to a real zone.

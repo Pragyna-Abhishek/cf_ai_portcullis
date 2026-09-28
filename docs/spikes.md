@@ -259,8 +259,8 @@ returning error `3036`/`4006` ("used up your daily free allocation") partway thr
 draft attempts ran to the 1,024-token limit emitting only `and`/`or` nodes, `E_SCHEMA_NOT_JSON`,
 0/3. This was one investigation of three attempts, not a 30-attempt spike run. Full
 account: `docs/reviews/2026-09-27-first-real-model-run.md`. Production moved to asking for rule text
-instead of AST JSON (DESIGN.md section 7, "Round-trip property"). The text route is not yet
-measured against the real model.
+instead of AST JSON (DESIGN.md section 7, "Round-trip property"). One post-fix run produced a valid
+rule on the first attempt (`docs/reviews/2026-09-28-first-text-route-run.md`).
 
 If the type split is also insufficient once re-measured, the next fallback in PLAN.md's ordered list
 is two-call decomposition (one call picks field/operator from enums, a second supplies only the

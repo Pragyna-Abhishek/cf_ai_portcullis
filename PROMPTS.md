@@ -98,6 +98,10 @@ unfilled in the original):
 >
 > Plain language, no marketing tone, no em-dashes anywhere. Open a PR.
 
+A follow-up message in the same session supplied three screenshots of a post-fix investigation on
+the deployed site, with the text: *"sorry, is this enough?"*. They are transcribed in
+[docs/reviews/2026-09-28-first-text-route-run.md](docs/reviews/2026-09-28-first-text-route-run.md).
+
 ## Runtime prompt templates, verbatim from prompts/
 
 One system/user pair per model call site in `src/server/workflow.ts`. `{{name}}` placeholders are

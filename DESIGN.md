@@ -80,8 +80,8 @@ real model's rule achieves: against the original AST schema, 0/30 attempts produ
 (docs/spikes.md, 0.4). The type-split fallback schema was measured on 2026-09-27 on the deployed
 site's first real investigation and also failed, 0/3 draft attempts
 (`docs/reviews/2026-09-27-first-real-model-run.md`), so production now asks for rule text
-(section 7, "Round-trip property"). The text route has not yet been measured against the real
-model. The account's daily neuron allocation was used up on 2026-09-25 by the Phase 0 spikes; it
+(section 7, "Round-trip property"). One post-fix run on the real model produced a valid rule on
+the first attempt (`docs/reviews/2026-09-28-first-text-route-run.md`). The account's daily neuron allocation was used up on 2026-09-25 by the Phase 0 spikes; it
 resets daily and was not exhausted on 2026-09-27 (docs/spikes.md, "investigating the Sep 25 neuron
 burst"). The demo with the fake model runs end to end locally
 (`npx wrangler dev --local --var MODEL_MODE:fake`); it has not yet been driven to an approved rule
@@ -1081,8 +1081,9 @@ Explicitly out of scope. Listed so that the absence of each is a decision rather
    `compareString`/`compareNumber`, `inStrings`/`inNumbers`, removing every union-typed field from
    the schema) was implemented after the account's 10,000/day free neuron allocation was used up on
    2026-09-25, and was first measured on 2026-09-27 on the deployed site: 0/3 attempts, same
-   connective explosion (`docs/reviews/2026-09-27-first-real-model-run.md`). The text route that
-   replaced it has not yet been measured against the real model.
+   connective explosion (`docs/reviews/2026-09-27-first-real-model-run.md`). One run of the text
+   route that replaced it produced a valid rule on the first attempt
+   (`docs/reviews/2026-09-28-first-text-route-run.md`).
 4. ~~Measured requests-per-10 ms~~. Closed: `CHUNK_SIZE = 500`, `requestCount = 6000`, measured
    locally (docs/spikes.md, 0.3). Re-check `exceededCpu` on the account.
 5. Grammar. Implemented as section 7 describes; Abhishek to review and own it.
