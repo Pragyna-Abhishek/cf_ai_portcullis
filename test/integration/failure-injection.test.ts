@@ -7,8 +7,7 @@
 import { env } from "cloudflare:workers";
 import { introspectWorkflow, introspectWorkflowInstance } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { CLASSIFY_JSON_SCHEMA, HYPOTHESIZE_JSON_SCHEMA } from "../../src/core/narrative-schema";
-import { RULE_JSON_SCHEMA } from "../../src/core/rules/schema";
+import { CLASSIFY_JSON_SCHEMA, HYPOTHESIZE_JSON_SCHEMA, TEXT_RULE_JSON_SCHEMA } from "../../src/core/narrative-schema";
 import type { AiRunner } from "../../src/model/workers-ai";
 import { agentNamed, waitForIncident } from "./helpers";
 
@@ -150,7 +149,7 @@ describe("failure injection: model quota exhaustion (CLAUDE.md: never retried, a
     const done = await withScriptedAi(
       async (_model, inputs) => {
         const schema = (inputs as { response_format?: { json_schema?: unknown } }).response_format?.json_schema;
-        if (schema === RULE_JSON_SCHEMA) {
+        if (schema === TEXT_RULE_JSON_SCHEMA) {
           draftCalls++;
           throw new Error("3036: daily allocation used up");
         }

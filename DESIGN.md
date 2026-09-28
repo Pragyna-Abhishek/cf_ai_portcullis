@@ -44,9 +44,11 @@ value, or a pass/fail judgment.
 4. The Workflow aggregates traffic in code and asks the model to classify the symptom and then form
    a hypothesis. The hypothesis is displayed with the evidence IDs it cites, each one clickable back
    to the breakdown that produced it.
-5. The model drafts a rule as AST JSON. Our printer renders it to Rules syntax, our parser reads
-   that text back, and the type checker validates field and operand types. Failures return to the
-   model with diagnostics, bounded by a retry limit.
+5. The model drafts a rule as literal Rules-language text, inside a flat `{"rule": "..."}` wrapper.
+   Our parser reads that text, the type checker validates field and operand types, and our printer
+   renders the canonical form back for the round-trip check. Failures return to the model with
+   diagnostics, bounded by a retry limit. (Section 7's "Round-trip property" explains why text, not
+   AST JSON, as of 2026-09-27.)
 6. The evaluator replays the scenario's traffic through the validated rule and reports four counts:
    attack total, attack blocked, legitimate total, legitimate blocked.
 7. The UI shows the rule text, those four numbers, the derived safety score, and the evidence. Two
@@ -694,15 +696,17 @@ Read from the Cloudflare docs in this session:
 
 ### Round-trip property
 
-The model emits an AST, never text. So the pipeline is:
+**As of 2026-09-27, the model emits rule text, not AST JSON.** The pipeline is:
 
 ```
-model -> RuleAST (JSON Schema validated) -> printer -> rule text -> parser -> RuleAST'
+model -> {"rule": "RULE TEXT"} (flat JSON Schema, one string property)
+       -> parser -> RuleAST -> type checker -> printer -> rule text' -> parser -> RuleAST'
 ```
 
-and the invariant is `RuleAST' deep-equals RuleAST`. This is asserted on every draft
-(`src/core/rules/pipeline.ts`) and is a property test over 1,000 generated ASTs, including
-type-incorrect ones and awkward strings (`test/unit/rules/printer.test.ts`).
+and the invariant is unchanged: `RuleAST' deep-equals RuleAST`. This is asserted on every draft
+(`verifyModelDraftText` calling `verifyAst` in `src/core/rules/pipeline.ts`) and is still backed by
+the same property test over 1,000 generated ASTs (`test/unit/rules/printer.test.ts`); only the step
+that produces the first `RuleAST` changed, from decoding a wire-format object to parsing text.
 
 The printer adds exactly the parentheses the parser needs: around a child that binds less tightly
 than its parent, around a right child that is the same operator as its parent (the parser folds to
@@ -710,6 +714,38 @@ the left), and around any non-comparison under `not`.
 
 The type checker runs before printing, as CLAUDE.md invariant 3 requires. Its diagnostics get spans
 afterwards, from the printer's span map, since the rendered text only exists once printed.
+
+**Why text, not AST JSON.** The AST route (`RULE_JSON_SCHEMA`, `decodeModelOutput` in
+`src/core/rules/schema.ts`) is the original design and is still used by
+`src/eval/harness.ts`'s primary scenario runner, for comparison, and is still fully tested — it is
+not deleted, only no longer what the production Workflow calls. It failed on the site's first three
+real (non-fake, non-simulated) model calls: all three attempts ran out their 1,024-token completion
+budget emitting nothing but nested `and`/`or` connective nodes with doubling ids and never a single
+leaf condition, so `decodeModelOutput` correctly rejected all three as truncated JSON
+(`E_SCHEMA_NOT_JSON`). This is the "connective explosion" pathology docs/spikes.md's spike 0.4
+first measured on 2026-09-25 against an earlier version of the schema; measuring it again here
+showed that splitting leaf kinds by value type (spike 0.4's second fallback, already shipped)
+narrows the schema but does not remove the escape valve: a JSON-Schema-constrained recursive
+node-list grammar always has *some* content-free node the model can keep emitting forever without
+committing to a real condition. Free text has no such node: every token the model writes is part of
+a field name, an operator, or a literal, so there is nothing to run away into. See
+`docs/reviews/2026-09-27-first-real-model-run.md` for the full account, and
+`test/unit/rules/schema.test.ts`'s "regression: the real truncated connective-explosion output"
+tests for the captured evidence.
+
+Two consequences worth being explicit about, because they change what the parser is *for* (and
+correct the claim this section used to make):
+
+- The model can, and on 2026-09-27 did, produce content that is not valid Rules-language syntax.
+  Under the text route this is an ordinary parse failure (the parser's own diagnostic codes,
+  `E_UNEXPECTED_EOF` and the rest), fed back to the model like any other diagnostic, not a new
+  failure mode and not a new diagnostic code. It is exactly what already happens for a
+  syntactically bad operator-typed rule from the UI.
+- The parser is exercised even more directly than before: it is now the *first* thing model output
+  reaches (CLAUDE.md invariant 3: JSON Schema validator, i.e. the outer `{"rule": ...}` wrapper,
+  then the parser, in place of the type checker sitting in between). It still validates the printer
+  on every run, still handles operator-typed input from the UI, and the round-trip assertion is
+  still a stronger correctness claim than "we retried until it parsed".
 
 ### The evaluator
 
@@ -721,14 +757,6 @@ time: each node produces a 0/1 mask over the chunk and `and`, `or`, `not` combin
 The correctness argument is `test/unit/rules/evaluate.test.ts`: on generated well-typed rules over
 generated traffic, the columnar evaluator agrees request by request with a naive reference evaluator
 (`src/core/rules/reference.ts`) that shares no code with it and compares strings directly.
-
-Two consequences worth being explicit about, because they change what the parser is *for*:
-
-- The model cannot produce a syntax error, because it never writes syntax. The retry loop therefore
-  handles schema failures and type errors, not parse failures.
-- The parser is still fully exercised and still the thing being defended. It validates the printer
-  on every single run, it handles operator-typed input from the UI, and the round-trip assertion is
-  a stronger correctness claim than "we retried until it parsed".
 
 ## 8. The Workflow
 
@@ -748,8 +776,8 @@ Hypothesis, memory and report steps (2, 3, 5, 13) are later phases, not built ye
 | --- | --- | --- | --- | --- |
 | 1 | `ensure-traffic` | Calls `ensureTrafficChunk` once per chunk (idempotent), then `trafficDigest` | digest, count, chunks | 3, 2 s, exponential |
 | 4 | `aggregate-traffic` | Merges the stored per-chunk partial aggregates into a `TrafficSummary` | `TrafficSummary` | 3, 2 s, exponential |
-| 6.i | `draft-rule-attempt-{i}` | Builds the prompt (plus the previous attempt's raw output and diagnostics, for `i > 1`), calls the model, stores the raw output verbatim | rule version ID | 2, 5 s, exponential |
-| 7.i | `validate-rule-attempt-{i}` | Runs the verification pipeline over the stored raw output | status, diagnostic codes | 3, 1 s, exponential |
+| 6.i | `draft-rule-attempt-{i}` | Builds the prompt (plus the previous attempt's raw output and diagnostics, for `i > 1`), calls the model with `TEXT_RULE_JSON_SCHEMA` (section 7, "Round-trip property"), stores the raw output verbatim | rule version ID | 2, 5 s, exponential |
+| 7.i | `validate-rule-attempt-{i}` | Runs `verifyModelDraftText` over the stored raw output | status, diagnostic codes | 3, 1 s, exponential |
 | 6.5.i | `draft-feedback-attempt-{i}` | Only when attempt `i` failed and `i < MAX_DRAFT_ATTEMPTS`: reads back that attempt's raw output and diagnostics for the next prompt | raw output, diagnostics | 3, 1 s, exponential |
 | 8.i | `replay-rule-attempt-{i}` | Replays each chunk through the stored rule of the attempt the loop stopped on, merges the counts | `ReplayResult` | 3, 2 s, exponential |
 | 8b | `naive-baseline` | Builds the naive rule in code from the summary, verifies it the same way | rule version ID | 3, 1 s, exponential |
@@ -840,7 +868,7 @@ locally.
 
 | Metric | Definition | Source |
 | --- | --- | --- |
-| Schema validity, first attempt | Fraction of investigations where attempt 1 produced schema-valid AST JSON | Rule version status |
+| Schema validity, first attempt | Fraction of investigations where attempt 1 produced a schema-valid draft | Rule version status |
 | Schema validity, after retries | Same, within `MAX_DRAFT_ATTEMPTS` | Rule version status |
 | Type validity, first attempt | Fraction where attempt 1 also passed the type checker | Diagnostics |
 | Round-trip failures | Count of printer or parser disagreements. Expected zero; any occurrence is a bug, not a metric | Round-trip assertion |
@@ -887,8 +915,15 @@ Run by the eval harness against the fake model and against the real one:
    the single source attribute value (ASN or country) with the largest share, blocked with `eq`.
    Source attributes only, because blocking the attacked endpoint itself would lock out every real
    user of it, which nobody would call a mitigation.
-4. **Text output instead of AST.** Ask the model for rule text and parse it. Measures the syntax
-   error rate the AST approach avoids, which is the evidence for Decision in section 7.
+4. **Text output instead of AST.** Ask the model for rule text and parse it, instead of the flat AST
+   wire format. **This ablation is now what production ships** (section 7, "Round-trip property"):
+   the first real-account run showed the AST route failing structurally (connective explosion, 0/3
+   real attempts schema-valid), not by an occasional syntax slip, which falsified this ablation's
+   original premise that text carries a *higher* error rate than a working AST route. The harness's
+   primary (non-ablation) flow (`src/eval/harness.ts`, `outcomeFromResponse`) still measures the AST
+   route via `RULE_JSON_SCHEMA`/`verifyModelDraft` for side-by-side comparison; it is no longer what
+   the Workflow calls. Swapping which of the two is "primary" versus "ablation" in the harness
+   itself is follow-up work, tracked in PLAN.md, not done as part of this fix.
 
 The harness caches model responses by hash of `(scenario, prompt, model)` so re-runs and ablations
 are nearly free and reported metrics are reproducible. This matters because the Workers AI rate

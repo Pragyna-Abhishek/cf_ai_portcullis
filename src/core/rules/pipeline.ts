@@ -44,6 +44,50 @@ export function verifyModelDraft(raw: string): DraftOutcome {
   return verifyAst(decoded.ast);
 }
 
+/**
+ * Decodes the outer `{"rule": "RULE TEXT"}` wrapper for the text-output draft route. This is the
+ * only place that touches the raw model string before it reaches the real parser; everything
+ * past this point is the same lexer/parser/typechecker the operator's own typed-rule edits go
+ * through (checkRuleText), so no new grammar and no new decoder logic is needed for the rule text
+ * itself.
+ */
+function decodeRuleTextWrapper(raw: string): { ok: true; text: string } | { ok: false; diagnostics: Diagnostic[] } {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return { ok: false, diagnostics: [diag("E_SCHEMA_NOT_JSON", null, null)] };
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, diagnostics: [diag("E_SCHEMA_INVALID", 'Expected an object with a "rule" property.', null)] };
+  }
+  const extra = Object.keys(value).filter((k) => k !== "rule");
+  if (extra.length > 0) {
+    return { ok: false, diagnostics: [diag("E_SCHEMA_INVALID", `Unexpected properties ${JSON.stringify(extra)}.`, null)] };
+  }
+  const rule = (value as Record<string, unknown>)["rule"];
+  if (typeof rule !== "string") {
+    return { ok: false, diagnostics: [diag("E_SCHEMA_INVALID", 'Property "rule" must be a string.', null)] };
+  }
+  return { ok: true, text: rule };
+}
+
+/**
+ * The text-output draft route (docs/reviews/2026-09-27-first-real-model-run.md): the model emits
+ * the rule as literal Rules-language text inside a flat `{"rule": string}` wrapper, instead of
+ * the flat AST wire format `verifyModelDraft` decodes. The wrapper is decoded above; the text
+ * itself goes through the same `parse` + `verifyAst` (limits, typecheck, print, round-trip) that
+ * every other rule text goes through, so a parse failure here reuses the parser's existing
+ * diagnostic codes rather than inventing new ones.
+ */
+export function verifyModelDraftText(raw: string): DraftOutcome {
+  const wrapper = decodeRuleTextWrapper(raw);
+  if (!wrapper.ok) return { status: "invalid-schema", ast: null, text: null, diagnostics: wrapper.diagnostics };
+  const parsed = parse(wrapper.text);
+  if (!parsed.ok) return { status: "invalid-schema", ast: null, text: wrapper.text, diagnostics: parsed.diagnostics };
+  return verifyAst(parsed.ast);
+}
+
 /** Printer and parser are injectable only so a test can force a disagreement. */
 export type RoundTripDeps = { print: typeof print; parse: typeof parse };
 const DEFAULT_DEPS: RoundTripDeps = { print, parse };
